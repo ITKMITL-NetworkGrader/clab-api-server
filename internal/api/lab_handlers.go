@@ -911,6 +911,61 @@ func InspectLabHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, labContainers)
 }
 
+// @Summary Inspect lab runtime status
+// @Description Reports whether a lab still has containers or its derived Docker management network. This endpoint remains usable after the lab is destroyed and requires superuser privileges.
+// @Tags Labs
+// @Security BearerAuth
+// @Produce json
+// @Param labName path string true "Name of the lab to inspect"
+// @Success 200 {object} models.LabRuntimeStatusResponse "Runtime status"
+// @Failure 400 {object} models.ErrorResponse "Invalid lab name"
+// @Failure 401 {object} models.ErrorResponse "Unauthorized"
+// @Failure 403 {object} models.ErrorResponse "Superuser privileges required"
+// @Failure 500 {object} models.ErrorResponse "Runtime inspection failed"
+// @Router /api/v1/labs/{labName}/runtime-status [get]
+func LabRuntimeStatusHandler(c *gin.Context) {
+	username := c.GetString("username")
+	labName := c.Param("labName")
+	if !isValidLabName(labName) {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Invalid characters in lab name."})
+		return
+	}
+	if !requireSuperuser(c, username, "inspect lab runtime status") {
+		return
+	}
+
+	svc := GetClabService()
+	if svc == nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: "Containerlab service not initialized"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	containers, err := svc.ListContainers(ctx, clab.ListOptions{LabName: labName})
+	if err != nil && !isContainersNotFoundError(err) {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to inspect lab '%s' containers: %s", labName, err.Error())})
+		return
+	}
+	containersExist := false
+	for _, container := range containers {
+		if clab.ContainerToClabContainerInfo(container).LabName == labName {
+			containersExist = true
+			break
+		}
+	}
+
+	networkExists, err := svc.ManagementNetworkExists(ctx, "clab-"+labName)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to inspect lab '%s' management network: %s", labName, err.Error())})
+		return
+	}
+	c.JSON(http.StatusOK, models.LabRuntimeStatusResponse{
+		ContainersExist:         containersExist,
+		ManagementNetworkExists: networkExists,
+	})
+}
+
 // @Summary List lab interfaces
 // @Description Returns interface details for nodes in a lab.
 // @Tags Labs

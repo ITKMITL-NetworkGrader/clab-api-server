@@ -3,15 +3,60 @@ package clab
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/docker/docker/api/types/network"
+	dockerclient "github.com/docker/docker/client"
 	gotc "github.com/florianl/go-tc"
 	clabcore "github.com/srl-labs/containerlab/core"
 )
+
+func TestManagementNetworkExistsReportsPresentAndAbsent(t *testing.T) {
+	ctx := context.Background()
+	client, err := dockerclient.NewClientWithOpts(
+		dockerclient.FromEnv,
+		dockerclient.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		t.Skipf("Docker client unavailable: %v", err)
+	}
+	defer client.Close()
+	if _, err := client.Ping(ctx); err != nil {
+		t.Skipf("Docker daemon unavailable: %v", err)
+	}
+
+	name := fmt.Sprintf("clab-api-runtime-status-%d", time.Now().UnixNano())
+	created, err := client.NetworkCreate(ctx, name, network.CreateOptions{})
+	if err != nil {
+		t.Fatalf("create test network: %v", err)
+	}
+	t.Cleanup(func() { _ = client.NetworkRemove(ctx, created.ID) })
+
+	exists, err := NewService().ManagementNetworkExists(ctx, name)
+	if err != nil {
+		t.Fatalf("inspect present network: %v", err)
+	}
+	if !exists {
+		t.Fatal("present network reported absent")
+	}
+
+	if err := client.NetworkRemove(ctx, created.ID); err != nil {
+		t.Fatalf("remove test network: %v", err)
+	}
+	exists, err = NewService().ManagementNetworkExists(ctx, name)
+	if err != nil {
+		t.Fatalf("inspect absent network: %v", err)
+	}
+	if exists {
+		t.Fatal("absent network reported present")
+	}
+}
 
 func TestResolveTopologySourceUsesContainerlabRendering(t *testing.T) {
 	current, err := user.Current()

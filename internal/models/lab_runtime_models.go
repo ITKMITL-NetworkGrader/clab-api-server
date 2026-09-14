@@ -14,6 +14,11 @@ type NodeBrowserPortsResponse struct {
 	Ports         []NodeBrowserPort `json:"ports"`
 }
 
+type LabRuntimeStatusResponse struct {
+	ContainersExist         bool `json:"containersExist"`
+	ManagementNetworkExists bool `json:"managementNetworkExists"`
+}
+
 type ShareToolResponse struct {
 	Message string `json:"message"`
 	Link    string `json:"link,omitempty"`
