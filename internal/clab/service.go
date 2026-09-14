@@ -965,8 +965,55 @@ func (s *Service) runTopologyNodeLifecycleAction(ctx context.Context, opts NodeL
 	if err != nil {
 		return fmt.Errorf("failed to %s node(s): %w", opts.Action, err)
 	}
+	if opts.Action == NodeLifecycleActionStart || opts.Action == NodeLifecycleActionRestart {
+		if err := refreshStartedIOLNodes(ctx, clab, nodeNames); err != nil {
+			return err
+		}
+	}
 
 	return nil
+}
+
+func refreshStartedIOLNodes(ctx context.Context, clab *clabcore.CLab, nodeNames []string) error {
+	if len(nodeNames) == 0 {
+		for name := range clab.Nodes {
+			nodeNames = append(nodeNames, name)
+		}
+	}
+
+	errs := make(chan error, len(nodeNames))
+	var wg sync.WaitGroup
+	for _, name := range nodeNames {
+		node := clab.Nodes[name]
+		if node == nil {
+			continue
+		}
+		cfg := node.Config()
+		if cfg == nil || cfg.Kind != "cisco_iol" {
+			continue
+		}
+
+		wg.Add(1)
+		go func(name string, node clabnodes.Node) {
+			defer wg.Done()
+			if err := node.UpdateConfigWithRuntimeInfo(ctx); err != nil {
+				errs <- fmt.Errorf("failed to refresh runtime info for IOL node %q: %w", name, err)
+				return
+			}
+			if err := node.PostDeploy(ctx, &clabnodes.PostDeployParams{Nodes: clab.Nodes}); err != nil {
+				errs <- fmt.Errorf("failed to restore management access for IOL node %q: %w", name, err)
+			}
+		}(name, node)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	var result error
+	for err := range errs {
+		result = errors.Join(result, err)
+	}
+	return result
 }
 
 func cleanNodeNames(nodeNames []string) []string {

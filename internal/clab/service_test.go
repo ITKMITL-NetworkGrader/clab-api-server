@@ -15,11 +15,41 @@ import (
 	dockerclient "github.com/docker/docker/client"
 	gotc "github.com/florianl/go-tc"
 	clabcore "github.com/srl-labs/containerlab/core"
+	clabmocknodes "github.com/srl-labs/containerlab/mocks/mocknodes"
+	clabnodes "github.com/srl-labs/containerlab/nodes"
+	clabtypes "github.com/srl-labs/containerlab/types"
+	"go.uber.org/mock/gomock"
 )
 
 func TestNodeLifecycleTimeoutFinishesBeforeHTTPDeadline(t *testing.T) {
 	if nodeLifecycleTimeout >= 2*time.Minute {
 		t.Fatalf("node lifecycle timeout = %s, must finish before the 2m HTTP deadline", nodeLifecycleTimeout)
+	}
+}
+
+func TestRefreshStartedIOLNodesRestoresRuntimeManagementAddress(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	iol := clabmocknodes.NewMockNode(ctrl)
+	linux := clabmocknodes.NewMockNode(ctrl)
+	nodes := map[string]clabnodes.Node{"r1": iol, "pc1": linux}
+
+	iol.EXPECT().Config().Return(&clabtypes.NodeConfig{Kind: "cisco_iol"})
+	linux.EXPECT().Config().Return(&clabtypes.NodeConfig{Kind: "linux"})
+	gomock.InOrder(
+		iol.EXPECT().UpdateConfigWithRuntimeInfo(gomock.Any()).Return(nil),
+		iol.EXPECT().PostDeploy(gomock.Any(), gomock.Any()).DoAndReturn(
+			func(_ context.Context, params *clabnodes.PostDeployParams) error {
+				if len(params.Nodes) != len(nodes) {
+					t.Fatalf("post-deploy nodes = %d, want %d", len(params.Nodes), len(nodes))
+				}
+				return nil
+			},
+		),
+	)
+
+	err := refreshStartedIOLNodes(context.Background(), &clabcore.CLab{Nodes: nodes}, nil)
+	if err != nil {
+		t.Fatalf("refresh started IOL nodes: %v", err)
 	}
 }
 
