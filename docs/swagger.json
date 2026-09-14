@@ -3069,6 +3069,64 @@
                 }
             }
         },
+        "/api/v1/labs/{labName}/runtime-status": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Reports whether a lab still has containers or its derived Docker management network. This endpoint remains usable after the lab is destroyed and requires superuser privileges.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Labs"
+                ],
+                "summary": "Inspect lab runtime status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Name of the lab to inspect",
+                        "name": "labName",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Runtime status",
+                        "schema": {
+                            "$ref": "#/definitions/models.LabRuntimeStatusResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid lab name",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Superuser privileges required",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Runtime inspection failed",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/labs/{labName}/save": {
             "post": {
                 "security": [
@@ -6961,6 +7019,17 @@
                 "type": {
                     "description": "Interface type (e.g., \"veth\", \"device\", \"dummy\")",
                     "type": "string"
+                }
+            }
+        },
+        "models.LabRuntimeStatusResponse": {
+            "type": "object",
+            "properties": {
+                "containersExist": {
+                    "type": "boolean"
+                },
+                "managementNetworkExists": {
+                    "type": "boolean"
                 }
             }
         },

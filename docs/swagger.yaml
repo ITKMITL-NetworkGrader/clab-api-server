@@ -710,6 +710,13 @@ definitions:
         description: Interface type (e.g., "veth", "device", "dummy")
         type: string
     type: object
+  models.LabRuntimeStatusResponse:
+    properties:
+      containersExist:
+        type: boolean
+      managementNetworkExists:
+        type: boolean
+    type: object
   models.LoginRequest:
     properties:
       password:
@@ -3018,6 +3025,45 @@ paths:
       security:
       - BearerAuth: []
       summary: Restart lab nodes
+      tags:
+      - Labs
+  /api/v1/labs/{labName}/runtime-status:
+    get:
+      description: Reports whether a lab still has containers or its derived Docker
+        management network. This endpoint remains usable after the lab is destroyed
+        and requires superuser privileges.
+      parameters:
+      - description: Name of the lab to inspect
+        in: path
+        name: labName
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Runtime status
+          schema:
+            $ref: '#/definitions/models.LabRuntimeStatusResponse'
+        "400":
+          description: Invalid lab name
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "403":
+          description: Superuser privileges required
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Runtime inspection failed
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Inspect lab runtime status
       tags:
       - Labs
   /api/v1/labs/{labName}/save:

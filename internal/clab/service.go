@@ -20,6 +20,9 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/containernetworking/plugins/pkg/ns"
+	"github.com/docker/docker/api/types/network"
+	dockerclient "github.com/docker/docker/client"
+	"github.com/docker/docker/errdefs"
 	gotc "github.com/florianl/go-tc"
 	clabcert "github.com/srl-labs/containerlab/cert"
 	clabcore "github.com/srl-labs/containerlab/core"
@@ -824,6 +827,34 @@ func (s *Service) ListContainers(ctx context.Context, opts ListOptions) ([]clabr
 	}
 
 	return containers, nil
+}
+
+// ManagementNetworkExists reports whether a Docker management network exists.
+func (s *Service) ManagementNetworkExists(ctx context.Context, name string) (bool, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false, errors.New("management network name is required")
+	}
+	if runtimeName := strings.TrimSpace(config.AppConfig.ClabRuntime); runtimeName != "" && runtimeName != "docker" {
+		return false, fmt.Errorf("management network inspection is unsupported for runtime %q", runtimeName)
+	}
+
+	client, err := dockerclient.NewClientWithOpts(
+		dockerclient.FromEnv,
+		dockerclient.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		return false, fmt.Errorf("failed to create Docker client: %w", err)
+	}
+	defer client.Close()
+
+	if _, err := client.NetworkInspect(ctx, name, network.InspectOptions{}); err != nil {
+		if errdefs.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to inspect management network %q: %w", name, err)
+	}
+	return true, nil
 }
 
 func (s *Service) RunNodeLifecycleAction(ctx context.Context, opts NodeLifecycleOptions) error {

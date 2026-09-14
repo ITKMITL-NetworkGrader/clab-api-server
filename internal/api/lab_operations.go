@@ -66,10 +66,7 @@ func beginLabOperationOrConflict(c *gin.Context, labName, operation string) (fun
 func ensureLabDestroyed(ctx context.Context, svc *clab.Service, labName string) error {
 	containers, err := svc.ListContainers(ctx, clab.ListOptions{LabName: labName})
 	if err != nil {
-		msg := strings.ToLower(err.Error())
-		if strings.Contains(msg, "no containers found") ||
-			strings.Contains(msg, "no containerlab labs found") ||
-			strings.Contains(msg, "not found") {
+		if isContainersNotFoundError(err) {
 			return nil
 		}
 		return fmt.Errorf("failed to verify lab '%s' destroy state: %w", labName, err)
@@ -98,4 +95,11 @@ func ensureLabDestroyed(ctx context.Context, svc *clab.Service, labName string) 
 	}
 
 	return nil
+}
+
+func isContainersNotFoundError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no containers found") ||
+		strings.Contains(msg, "no containerlab labs found") ||
+		strings.Contains(msg, "not found")
 }

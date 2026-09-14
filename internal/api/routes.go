@@ -91,6 +91,7 @@ func SetupRoutes(router *gin.Engine) {
 			{
 				// Inspect lab details
 				labSpecific.GET("", InspectLabHandler) // GET /api/v1/labs/{labName}
+				labSpecific.GET("/runtime-status", LabRuntimeStatusHandler)
 
 				// Destroy lab
 				labSpecific.DELETE("", DestroyLabHandler) // DELETE /api/v1/labs/{labName}
