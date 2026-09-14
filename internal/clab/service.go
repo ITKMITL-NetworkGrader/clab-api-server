@@ -43,6 +43,7 @@ import (
 
 const (
 	defaultTimeout         = 5 * time.Minute
+	nodeLifecycleTimeout   = 10 * time.Second
 	gracefulDestroyTimeout = 2 * time.Minute
 	imagePullTimeout       = 30 * time.Minute
 )
@@ -922,8 +923,8 @@ func (s *Service) runTopologyNodeLifecycleAction(ctx context.Context, opts NodeL
 	}()
 
 	clabOpts := []clabcore.ClabOption{
-		clabcore.WithTimeout(defaultTimeout),
-		clabcore.WithRuntime(config.AppConfig.ClabRuntime, &clabruntime.RuntimeConfig{Timeout: defaultTimeout}),
+		clabcore.WithTimeout(nodeLifecycleTimeout),
+		clabcore.WithRuntime(config.AppConfig.ClabRuntime, &clabruntime.RuntimeConfig{Timeout: nodeLifecycleTimeout}),
 	}
 
 	topoPath := strings.TrimSpace(opts.TopoPath)

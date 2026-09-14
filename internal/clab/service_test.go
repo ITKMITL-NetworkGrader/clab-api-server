@@ -17,6 +17,12 @@ import (
 	clabcore "github.com/srl-labs/containerlab/core"
 )
 
+func TestNodeLifecycleTimeoutFinishesBeforeHTTPDeadline(t *testing.T) {
+	if nodeLifecycleTimeout >= 2*time.Minute {
+		t.Fatalf("node lifecycle timeout = %s, must finish before the 2m HTTP deadline", nodeLifecycleTimeout)
+	}
+}
+
 func TestManagementNetworkExistsReportsPresentAndAbsent(t *testing.T) {
 	ctx := context.Background()
 	client, err := dockerclient.NewClientWithOpts(
