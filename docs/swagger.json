@@ -2359,6 +2359,82 @@
                 }
             }
         },
+        "/api/v1/labs/{labName}/nodes/lifecycle": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Validates every requested node, then dispatches one native lifecycle operation.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Labs - Nodes"
+                ],
+                "summary": "Start or stop selected lab nodes",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Lab Name",
+                        "name": "labName",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Lifecycle action and node names",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.bulkNodeLifecycleRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/api.BulkNodeLifecycleResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/api.BulkNodeLifecycleResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/api.BulkNodeLifecycleResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.BulkNodeLifecycleResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/api.BulkNodeLifecycleResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/api.BulkNodeLifecycleResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/labs/{labName}/nodes/{nodeName}/browser-ports": {
             "get": {
                 "security": [
@@ -6028,6 +6104,38 @@
         }
     },
     "definitions": {
+        "api.BulkNodeLifecycleResponse": {
+            "type": "object",
+            "properties": {
+                "dispatched": {
+                    "type": "boolean"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.bulkNodeLifecycleRequest": {
+            "type": "object",
+            "required": [
+                "action",
+                "nodeNames"
+            ],
+            "properties": {
+                "action": {
+                    "type": "string"
+                },
+                "nodeNames": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                }
+            }
+        },
         "models.ApplyLabResponse": {
             "type": "object",
             "properties": {

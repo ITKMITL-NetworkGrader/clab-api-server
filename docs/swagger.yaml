@@ -1,4 +1,25 @@
 definitions:
+  api.BulkNodeLifecycleResponse:
+    properties:
+      dispatched:
+        type: boolean
+      error:
+        type: string
+      message:
+        type: string
+    type: object
+  api.bulkNodeLifecycleRequest:
+    properties:
+      action:
+        type: string
+      nodeNames:
+        items:
+          type: string
+        type: array
+    required:
+    - action
+    - nodeNames
+    type: object
   models.ApplyLabResponse:
     properties:
       addedLinks:
@@ -2975,6 +2996,56 @@ paths:
       security:
       - BearerAuth: []
       summary: Unpause node
+      tags:
+      - Labs - Nodes
+  /api/v1/labs/{labName}/nodes/lifecycle:
+    post:
+      consumes:
+      - application/json
+      description: Validates every requested node, then dispatches one native lifecycle
+        operation.
+      parameters:
+      - description: Lab Name
+        in: path
+        name: labName
+        required: true
+        type: string
+      - description: Lifecycle action and node names
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/api.bulkNodeLifecycleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/api.BulkNodeLifecycleResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/api.BulkNodeLifecycleResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/api.BulkNodeLifecycleResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/api.BulkNodeLifecycleResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.BulkNodeLifecycleResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/api.BulkNodeLifecycleResponse'
+      security:
+      - BearerAuth: []
+      summary: Start or stop selected lab nodes
       tags:
       - Labs - Nodes
   /api/v1/labs/{labName}/restart:

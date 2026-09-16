@@ -120,6 +120,143 @@ func UnpauseNodeHandler(c *gin.Context) {
 	handleNodeLifecycle(c, clab.NodeLifecycleActionUnpause)
 }
 
+type bulkNodeLifecycleRequest struct {
+	Action    string   `json:"action" binding:"required"`
+	NodeNames []string `json:"nodeNames" binding:"required"`
+}
+
+type BulkNodeLifecycleResponse struct {
+	Dispatched bool   `json:"dispatched"`
+	Message    string `json:"message,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+func normalizeLifecycleNodeNames(nodeNames []string) ([]string, error) {
+	if len(nodeNames) == 0 {
+		return nil, fmt.Errorf("at least one node name is required")
+	}
+
+	seen := make(map[string]struct{}, len(nodeNames))
+	result := make([]string, 0, len(nodeNames))
+	for _, rawName := range nodeNames {
+		name := strings.TrimSpace(rawName)
+		if name == "" {
+			return nil, fmt.Errorf("node names cannot be blank")
+		}
+		if _, exists := seen[name]; exists {
+			return nil, fmt.Errorf("duplicate node name %q", name)
+		}
+		seen[name] = struct{}{}
+		result = append(result, name)
+	}
+	return result, nil
+}
+
+func validBulkLifecycleAction(action clab.NodeLifecycleAction) bool {
+	return action == clab.NodeLifecycleActionStart || action == clab.NodeLifecycleActionStop
+}
+
+// BulkNodeLifecycleHandler starts or stops a validated subset of lab nodes in one native call.
+// @Summary Start or stop selected lab nodes
+// @Description Validates every requested node, then dispatches one native lifecycle operation.
+// @Tags Labs - Nodes
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param labName path string true "Lab Name"
+// @Param request body bulkNodeLifecycleRequest true "Lifecycle action and node names"
+// @Success 200 {object} BulkNodeLifecycleResponse
+// @Failure 400 {object} BulkNodeLifecycleResponse
+// @Failure 401 {object} BulkNodeLifecycleResponse
+// @Failure 404 {object} BulkNodeLifecycleResponse
+// @Failure 409 {object} BulkNodeLifecycleResponse
+// @Failure 500 {object} BulkNodeLifecycleResponse
+// @Router /api/v1/labs/{labName}/nodes/lifecycle [post]
+func BulkNodeLifecycleHandler(c *gin.Context) {
+	username := c.GetString("username")
+	labName := strings.TrimSpace(c.Param("labName"))
+	if !isValidLabName(labName) {
+		c.JSON(http.StatusBadRequest, gin.H{"dispatched": false, "error": "Invalid lab name format."})
+		return
+	}
+
+	var req bulkNodeLifecycleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"dispatched": false, "error": "Invalid request body."})
+		return
+	}
+	action := clab.NodeLifecycleAction(strings.ToLower(strings.TrimSpace(req.Action)))
+	if !validBulkLifecycleAction(action) {
+		c.JSON(http.StatusBadRequest, gin.H{"dispatched": false, "error": "Action must be start or stop."})
+		return
+	}
+	nodeNames, err := normalizeLifecycleNodeNames(req.NodeNames)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"dispatched": false, "error": err.Error()})
+		return
+	}
+
+	release, active, ok := labOperations.begin(labName, string(action))
+	if !ok {
+		c.Header("Retry-After", "2")
+		c.JSON(http.StatusConflict, gin.H{
+			"dispatched": false,
+			"error":      fmt.Sprintf("Lab '%s' is busy with %s operation.", labName, active),
+		})
+		return
+	}
+	defer release()
+
+	originalTopoPath, err := verifyLabOwnership(c, username, labName)
+	if err != nil {
+		return
+	}
+	svc := GetClabService()
+	if svc == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"dispatched": false, "error": "Containerlab service not initialized"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	defer cancel()
+	resolvedNames := make([]string, 0, len(nodeNames))
+	resolvedSeen := make(map[string]struct{}, len(nodeNames))
+	for _, nodeName := range nodeNames {
+		containerInfo, resolveErr := resolveLabNodeContainer(ctx, svc, labName, nodeName)
+		if resolveErr != nil {
+			c.JSON(http.StatusNotFound, gin.H{"dispatched": false, "error": resolveErr.Error()})
+			return
+		}
+		resolvedName := resolveTopologyNodeName(labName, containerInfo)
+		if resolvedName == "" {
+			c.JSON(http.StatusInternalServerError, gin.H{"dispatched": false, "error": "failed to resolve topology node name"})
+			return
+		}
+		if _, exists := resolvedSeen[resolvedName]; exists {
+			c.JSON(http.StatusBadRequest, gin.H{"dispatched": false, "error": fmt.Sprintf("multiple names resolve to node %q", resolvedName)})
+			return
+		}
+		resolvedSeen[resolvedName] = struct{}{}
+		resolvedNames = append(resolvedNames, resolvedName)
+	}
+
+	if err := svc.RunNodeLifecycleAction(ctx, clab.NodeLifecycleOptions{
+		LabName:   labName,
+		TopoPath:  originalTopoPath,
+		Username:  username,
+		NodeNames: resolvedNames,
+		Action:    action,
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"dispatched": true, "error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"dispatched": true,
+		"message":    fmt.Sprintf("%d node(s) %s successfully.", len(resolvedNames), lifecyclePastTense(action)),
+	})
+}
+
 func handleNodeLifecycle(c *gin.Context, action clab.NodeLifecycleAction) {
 	username := c.GetString("username")
 	labName := strings.TrimSpace(c.Param("labName"))
