@@ -858,6 +858,53 @@ func (s *Service) ManagementNetworkExists(ctx context.Context, name string) (boo
 	return true, nil
 }
 
+// ErrManagementNetworkInUse means the lab's management network still has containers attached.
+var ErrManagementNetworkInUse = errors.New("management network still has attached containers")
+
+// RemoveOrphanManagementNetwork deletes the lab's own management network
+// ("clab-<lab>") when nothing is attached to it. containerlab's destroy of a lab
+// whose containers carry several topo-file labels re-creates it
+// (core/destroy.go makeCopyForDestroy -> CreateNetwork), leaving it behind (NTG-114).
+// Only a network labelled "containerlab" is touched; the shared default "clab"
+// network can never be named here because the lab name is required.
+func (s *Service) RemoveOrphanManagementNetwork(ctx context.Context, labName string) (bool, error) {
+	labName = strings.TrimSpace(labName)
+	if labName == "" {
+		return false, errors.New("lab name is required")
+	}
+	if runtimeName := strings.TrimSpace(config.AppConfig.ClabRuntime); runtimeName != "" && runtimeName != "docker" {
+		return false, fmt.Errorf("management network cleanup is unsupported for runtime %q", runtimeName)
+	}
+	client, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	if err != nil {
+		return false, fmt.Errorf("failed to create Docker client: %w", err)
+	}
+	defer client.Close()
+
+	name := "clab-" + labName
+	info, err := client.NetworkInspect(ctx, name, network.InspectOptions{})
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to inspect management network %q: %w", name, err)
+	}
+	if _, ok := info.Labels["containerlab"]; !ok {
+		return false, nil
+	}
+	if len(info.Containers) > 0 {
+		return false, ErrManagementNetworkInUse
+	}
+	if err := client.NetworkRemove(ctx, info.ID); err != nil {
+		if errdefs.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to remove management network %q: %w", name, err)
+	}
+	log.Infof("Removed orphaned management network %q", name)
+	return true, nil
+}
+
 func (s *Service) RunNodeLifecycleAction(ctx context.Context, opts NodeLifecycleOptions) error {
 	ctx, cancel := s.ensureTimeout(ctx)
 	defer cancel()
