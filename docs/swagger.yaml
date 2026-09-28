@@ -2558,6 +2558,44 @@ paths:
       summary: List lab interfaces
       tags:
       - Labs
+  /api/v1/labs/{labName}/management-network:
+    delete:
+      parameters:
+      - description: Lab Name
+        in: path
+        name: labName
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Remove orphaned lab management network
+      tags:
+      - Labs
   /api/v1/labs/{labName}/nodes/{nodeName}/browser-ports:
     get:
       description: Returns exposed host ports for a node suitable for opening in a

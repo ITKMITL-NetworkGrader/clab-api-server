@@ -4,6 +4,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -588,6 +589,13 @@ func DestroyLabHandler(c *gin.Context) {
 		}
 		if err := ensureLabDestroyed(ctx, svc, labName); err != nil {
 			return err
+		}
+		// NTG-114: a multi-topo-file destroy re-creates the management network; remove it
+		// when the whole lab went and the caller did not ask to keep it.
+		if !keepMgmtNet && len(nodeFilterSlice) == 0 {
+			if _, err := svc.RemoveOrphanManagementNetwork(ctx, labName); err != nil {
+				return fmt.Errorf("lab '%s' destroyed but its management network remains: %w", labName, err)
+			}
 		}
 		return nil
 	}
@@ -1243,4 +1251,55 @@ func ExecCommandHandler(c *gin.Context) {
 
 	log.Infof("ExecCommand user '%s': Command executed successfully on lab '%s'.", username, labName)
 	c.JSON(http.StatusOK, response)
+}
+
+// ManagementNetworkCleanupHandler removes a lab's orphaned management network
+// ("clab-<lab>") when no container is attached (NTG-114). DestroyLab cannot do
+// this once every container is gone, because its ownership check needs one.
+// Superuser only: owning a topology file does not prove owning the network.
+//
+// @Summary Remove orphaned lab management network
+// @Tags Labs
+// @Security BearerAuth
+// @Produce json
+// @Param labName path string true "Lab Name"
+// @Success 200 {object} map[string]bool
+// @Failure 400 {object} models.ErrorResponse
+// @Failure 403 {object} models.ErrorResponse
+// @Failure 409 {object} models.ErrorResponse
+// @Failure 500 {object} models.ErrorResponse
+// @Router /api/v1/labs/{labName}/management-network [delete]
+func ManagementNetworkCleanupHandler(c *gin.Context) {
+	username := c.GetString("username")
+	labName := c.Param("labName")
+	if !isValidLabName(labName) {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Invalid characters in lab name."})
+		return
+	}
+	if !requireSuperuser(c, username, "remove a lab management network") {
+		return
+	}
+	releaseLabOperation, ok := beginLabOperationOrConflict(c, labName, "network-cleanup")
+	if !ok {
+		return
+	}
+	defer releaseLabOperation()
+
+	svc := GetClabService()
+	if svc == nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: "Containerlab service not initialized"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+	removed, err := svc.RemoveOrphanManagementNetwork(ctx, labName)
+	if errors.Is(err, clab.ErrManagementNetworkInUse) {
+		c.JSON(http.StatusConflict, models.ErrorResponse{Error: err.Error()})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"removed": removed})
 }
