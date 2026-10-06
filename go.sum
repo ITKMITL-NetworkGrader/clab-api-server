@@ -8,8 +8,8 @@ github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c h1:udKWzYgxTojEK
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
-github.com/ITKMITL-NetworkGrader/containerlab v0.78.1-0.20261006042132-179b4ac3c9bb h1:FsH+N9M5oyky/Cn7wwZrBGOfIymVqkazNi95pBbhKF4=
-github.com/ITKMITL-NetworkGrader/containerlab v0.78.1-0.20261006042132-179b4ac3c9bb/go.mod h1:ObI3pwB5ficc57DeifaFa9Y5JgPyNXPu4GbikNiFF48=
+github.com/ITKMITL-NetworkGrader/containerlab v0.78.1-0.20261006184448-ef553d3f7def h1:Y71Y+j0U9zQWRZ1c0FD7DeoL9dPo26+U5p6CcPjCNBk=
+github.com/ITKMITL-NetworkGrader/containerlab v0.78.1-0.20261006184448-ef553d3f7def/go.mod h1:ObI3pwB5ficc57DeifaFa9Y5JgPyNXPu4GbikNiFF48=
 github.com/KyleBanks/depth v1.2.1 h1:5h8fQADFrWtarTdtDudMmGsC7GPbOAu6RVB3ffsVFHc=
 github.com/KyleBanks/depth v1.2.1/go.mod h1:jzSb9d0L43HxTQfT+oSA1EEp2q+ne2uh6XgeJcm8brE=
 github.com/Masterminds/semver/v3 v3.4.0 h1:Zog+i5UMtVoCU8oKka5P7i9q9HgrJeGzI9SA1Xbatp0=
