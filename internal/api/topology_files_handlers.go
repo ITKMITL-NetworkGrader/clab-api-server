@@ -471,7 +471,7 @@ func DeployTopologyHandler(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
 	defer cancel()
 
 	labInfo, exists, checkErr := getLabInfo(ctx, username, labName)
@@ -635,7 +635,7 @@ func ApplyTopologyHandler(c *gin.Context) {
 		return
 	}
 
-	checkCtx, checkCancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 2*time.Minute)
+	checkCtx, checkCancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
 	defer checkCancel()
 
 	labInfo, exists, checkErr := getLabInfo(checkCtx, username, labName)

@@ -1236,7 +1236,7 @@ func ExecCommandHandler(c *gin.Context) {
 		Username:      username,
 	}
 
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Minute)
 	defer cancel()
 
 	log.Infof("ExecCommand user '%s': Executing command on lab '%s'...", username, labName)

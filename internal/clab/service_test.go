@@ -339,6 +339,9 @@ func preserveEnv(keys ...string) func() {
 
 // NTG-207: a deploy or apply holds containerlabInitMu for its whole run; reads must not queue behind it.
 func TestListContainersDoesNotWaitForDeployLock(t *testing.T) {
+	if _, err := sharedReadClab(); err != nil {
+		t.Skipf("container runtime unavailable: %v", err)
+	}
 	containerlabInitMu.Lock()
 	defer containerlabInitMu.Unlock()
 
