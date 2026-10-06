@@ -217,7 +217,7 @@ func BulkNodeLifecycleHandler(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 2*time.Minute)
 	defer cancel()
 	resolvedNames := make([]string, 0, len(nodeNames))
 	resolvedSeen := make(map[string]struct{}, len(nodeNames))
@@ -414,7 +414,7 @@ func handleLabNodeLifecycle(c *gin.Context, action clab.NodeLifecycleAction) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 10*time.Minute)
 	defer cancel()
 
 	opts := clab.NodeLifecycleOptions{

@@ -336,3 +336,23 @@ func preserveEnv(keys ...string) func() {
 		}
 	}
 }
+
+// NTG-207: a deploy or apply holds containerlabInitMu for its whole run; reads must not queue behind it.
+func TestListContainersDoesNotWaitForDeployLock(t *testing.T) {
+	containerlabInitMu.Lock()
+	defer containerlabInitMu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := (&Service{}).ListContainers(context.Background(), ListOptions{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ListContainers: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("ListContainers waited for the deploy lock")
+	}
+}
