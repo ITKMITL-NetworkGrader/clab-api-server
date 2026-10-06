@@ -160,3 +160,27 @@ func TestReserveUserSessionCapacityIgnoresClosedSessions(t *testing.T) {
 		t.Fatalf("reserve with only closed sessions returned unexpected error: %v", err)
 	}
 }
+
+// NTG-194: IOL 15 only offers SHA-1 kex and ssh-rsa host keys, which OpenSSH 9 leaves out by
+// default; the terminal must not depend on a host ssh_config entry for them.
+func TestResolveLaunchCommandSSHAddsLegacyAlgorithms(t *testing.T) {
+	command, err := resolveLaunchCommand(models.TerminalProtocolSSH, CreateSessionOptions{
+		ContainerIP:   "172.20.15.2/24",
+		ContainerKind: "cisco_iol",
+	})
+	if err != nil {
+		t.Fatalf("resolveLaunchCommand returned unexpected error: %v", err)
+	}
+	joined := strings.Join(command, " ")
+	for _, want := range []string{
+		"-o KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1",
+		"-o HostKeyAlgorithms=+ssh-rsa",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("ssh argv %q lacks %q", joined, want)
+		}
+	}
+	if last := command[len(command)-1]; last != "admin@172.20.15.2" {
+		t.Fatalf("unexpected ssh target %q", last)
+	}
+}

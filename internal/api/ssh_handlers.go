@@ -15,6 +15,7 @@ import (
 	"github.com/srl-labs/clab-api-server/internal/config"
 	"github.com/srl-labs/clab-api-server/internal/models"
 	"github.com/srl-labs/clab-api-server/internal/ssh"
+	termsvc "github.com/srl-labs/clab-api-server/internal/terminal"
 )
 
 // Global SSH manager instance
@@ -169,7 +170,7 @@ func RequestSSHAccessHandler(c *gin.Context) {
 		Host:       apiServerHost,
 		Username:   sshUsername,
 		Expiration: session.Expiration,
-		Command:    fmt.Sprintf("ssh -p %d %s@%s", session.Port, sshUsername, apiServerHost),
+		Command:    sshAccessCommand(session.Port, sshUsername, apiServerHost),
 	}
 
 	log.Infof("SSH access granted for user '%s' to lab '%s', node '%s' on port %d until %s",
@@ -297,4 +298,9 @@ func getAPIServerHost(r *http.Request) string {
 	}
 
 	return host
+}
+
+// sshAccessCommand builds the command handed out for copying (NTG-194: with the options IOL 15 needs).
+func sshAccessCommand(port int, username, host string) string {
+	return fmt.Sprintf("ssh %s -p %d %s@%s", strings.Join(termsvc.LegacySSHOptions, " "), port, username, host)
 }
