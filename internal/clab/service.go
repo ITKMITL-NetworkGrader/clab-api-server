@@ -67,6 +67,31 @@ func newContainerLab(opts ...clabcore.ClabOption) (*clabcore.CLab, error) {
 	return clabcore.NewContainerLab(opts...)
 }
 
+var (
+	readClabMu sync.Mutex
+	readClab   *clabcore.CLab
+)
+
+// sharedReadClab (NTG-207): a CLab built without a topology never reads the owner env, so one instance
+// serves every read. Building one per request queued each read behind running deploys on
+// containerlabInitMu, and leaked a Docker client each time. A failed build is retried on the next call.
+func sharedReadClab() (*clabcore.CLab, error) {
+	readClabMu.Lock()
+	defer readClabMu.Unlock()
+	if readClab != nil {
+		return readClab, nil
+	}
+	clab, err := clabcore.NewContainerLab(
+		clabcore.WithTimeout(defaultTimeout),
+		clabcore.WithRuntime(config.AppConfig.ClabRuntime, &clabruntime.RuntimeConfig{Timeout: defaultTimeout}),
+	)
+	if err != nil {
+		return nil, err
+	}
+	readClab = clab
+	return clab, nil
+}
+
 func newContainerLabForOwner(owner string, opts ...clabcore.ClabOption) (*clabcore.CLab, error) {
 	containerlabInitMu.Lock()
 	defer containerlabInitMu.Unlock()
@@ -789,12 +814,7 @@ func (s *Service) ListContainers(ctx context.Context, opts ListOptions) ([]clabr
 	defer cancel()
 
 	// Create a minimal clab instance for listing (no topology needed)
-	clabOpts := []clabcore.ClabOption{
-		clabcore.WithTimeout(defaultTimeout),
-		clabcore.WithRuntime(config.AppConfig.ClabRuntime, &clabruntime.RuntimeConfig{Timeout: defaultTimeout}),
-	}
-
-	clab, err := newContainerLab(clabOpts...)
+	clab, err := sharedReadClab()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create containerlab instance: %w", err)
 	}
@@ -1324,12 +1344,7 @@ func (s *Service) ListContainerInterfaces(ctx context.Context, container *clabru
 	ctx, cancel := s.ensureTimeout(ctx)
 	defer cancel()
 
-	clabOpts := []clabcore.ClabOption{
-		clabcore.WithTimeout(defaultTimeout),
-		clabcore.WithRuntime(config.AppConfig.ClabRuntime, &clabruntime.RuntimeConfig{Timeout: defaultTimeout}),
-	}
-
-	clab, err := newContainerLab(clabOpts...)
+	clab, err := sharedReadClab()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create containerlab instance: %w", err)
 	}
@@ -1347,12 +1362,7 @@ func (s *Service) ListContainersInterfaces(ctx context.Context, containers []cla
 	ctx, cancel := s.ensureTimeout(ctx)
 	defer cancel()
 
-	clabOpts := []clabcore.ClabOption{
-		clabcore.WithTimeout(defaultTimeout),
-		clabcore.WithRuntime(config.AppConfig.ClabRuntime, &clabruntime.RuntimeConfig{Timeout: defaultTimeout}),
-	}
-
-	clab, err := newContainerLab(clabOpts...)
+	clab, err := sharedReadClab()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create containerlab instance: %w", err)
 	}
@@ -1628,12 +1638,7 @@ func (s *Service) DisableTxOffload(ctx context.Context, opts DisableTxOffloadOpt
 	ctx, cancel := s.ensureTimeout(ctx)
 	defer cancel()
 
-	clabOpts := []clabcore.ClabOption{
-		clabcore.WithTimeout(defaultTimeout),
-		clabcore.WithRuntime(config.AppConfig.ClabRuntime, &clabruntime.RuntimeConfig{Timeout: defaultTimeout}),
-	}
-
-	clab, err := newContainerLab(clabOpts...)
+	clab, err := sharedReadClab()
 	if err != nil {
 		return fmt.Errorf("failed to create containerlab instance: %w", err)
 	}
@@ -1707,12 +1712,11 @@ func (s *Service) CreateVeth(ctx context.Context, opts VethCreateOptions) error 
 		return fmt.Errorf("failed to parse B endpoint: %w", err)
 	}
 
-	clabOpts := []clabcore.ClabOption{
+	// Not sharedReadClab: createVethNodes adds nodes to this instance.
+	clab, err := newContainerLab(
 		clabcore.WithTimeout(defaultTimeout),
 		clabcore.WithRuntime(config.AppConfig.ClabRuntime, &clabruntime.RuntimeConfig{Timeout: defaultTimeout}),
-	}
-
-	clab, err := newContainerLab(clabOpts...)
+	)
 	if err != nil {
 		return fmt.Errorf("failed to create containerlab instance: %w", err)
 	}
@@ -2287,12 +2291,7 @@ func (s *Service) ShowNetem(ctx context.Context, containerName string) ([]clabty
 }
 
 func (s *Service) getContainerRuntime() (clabruntime.ContainerRuntime, error) {
-	clabOpts := []clabcore.ClabOption{
-		clabcore.WithTimeout(defaultTimeout),
-		clabcore.WithRuntime(config.AppConfig.ClabRuntime, &clabruntime.RuntimeConfig{Timeout: defaultTimeout}),
-	}
-
-	clab, err := newContainerLab(clabOpts...)
+	clab, err := sharedReadClab()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create containerlab instance: %w", err)
 	}
