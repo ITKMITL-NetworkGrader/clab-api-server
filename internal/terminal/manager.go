@@ -558,6 +558,13 @@ func normalizeProtocol(protocol models.TerminalProtocol) (models.TerminalProtoco
 	}
 }
 
+// LegacySSHOptions (NTG-194): Cisco IOL 15 only offers SHA-1 kex and ssh-rsa host keys, which
+// OpenSSH 9 leaves out by default. "+" only adds them, so newer nodes negotiate as before.
+var LegacySSHOptions = []string{
+	"-o", "KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group-exchange-sha1",
+	"-o", "HostKeyAlgorithms=+ssh-rsa",
+}
+
 func resolveLaunchCommand(protocol models.TerminalProtocol, opts CreateSessionOptions) ([]string, error) {
 	switch protocol {
 	case models.TerminalProtocolSSH:
@@ -566,8 +573,9 @@ func resolveLaunchCommand(protocol models.TerminalProtocol, opts CreateSessionOp
 			return nil, fmt.Errorf("container management IP is required for SSH")
 		}
 		username := resolveSSHUsername(opts.ContainerKind, opts.SSHUsername)
-		return []string{
+		return append(append([]string{
 			"ssh",
+		}, LegacySSHOptions...),
 			"-o", "StrictHostKeyChecking=no",
 			"-o", "UserKnownHostsFile=/dev/null",
 			"-o", "GlobalKnownHostsFile=/dev/null",
@@ -575,7 +583,7 @@ func resolveLaunchCommand(protocol models.TerminalProtocol, opts CreateSessionOp
 			"-o", "ServerAliveInterval=30",
 			"-o", "ServerAliveCountMax=3",
 			fmt.Sprintf("%s@%s", username, ip),
-		}, nil
+		), nil
 	case models.TerminalProtocolShell:
 		command := resolveShellCommand(opts.ContainerKind)
 		return append([]string{resolveRuntime(opts.Runtime), "exec", "-it", opts.ContainerID}, command...), nil
