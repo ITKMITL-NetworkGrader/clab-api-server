@@ -34,6 +34,9 @@ const labTopologyInfoCacheTTL = 1500 * time.Millisecond
 
 var labTopologyInfoCache sync.Map
 
+// lookupLabInfo resolves a lab's newest container info; a variable so tests can stub it.
+var lookupLabInfo = getLabInfo
+
 func getLabInfoCached(ctx context.Context, username, labName string) (*models.ClabContainerInfo, bool, error) {
 	cacheKey := username + "\x00" + labName
 
@@ -52,7 +55,7 @@ func getLabInfoCached(ctx context.Context, username, labName string) (*models.Cl
 		}
 	}
 
-	info, exists, err := getLabInfo(ctx, username, labName)
+	info, exists, err := lookupLabInfo(ctx, username, labName)
 	if err != nil {
 		return nil, false, err
 	}
