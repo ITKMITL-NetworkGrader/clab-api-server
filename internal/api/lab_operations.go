@@ -77,7 +77,10 @@ func beginLabOperationWaiting(c *gin.Context, labName, operation string, wait ti
 			}
 			return release, true
 		}
-		if c.Request.Context().Err() != nil || time.Now().After(deadline) {
+		if c.Request.Context().Err() != nil {
+			return nil, false
+		}
+		if time.Now().After(deadline) {
 			return beginLabOperationOrConflict(c, labName, operation)
 		}
 		time.Sleep(50 * time.Millisecond)

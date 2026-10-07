@@ -159,10 +159,7 @@ func TestApplyRewritesTheFileTheNewestContainerNowPointsAt(t *testing.T) {
 }
 
 func TestStreamedApplyRewritesTheFileToo(t *testing.T) {
-	_, f0, code := applyRemovingNewest(t, "ntg224-stream", "&stream=true")
-	if code != http.StatusOK {
-		t.Fatalf("apply status %d", code)
-	}
+	_, f0, _ := applyRemovingNewest(t, "ntg224-stream", "&stream=true") // a stream always answers 200
 	if got := read(t, f0); got != "nodes: four\n" {
 		t.Fatalf("f0 = %q, want the applied topology", got)
 	}

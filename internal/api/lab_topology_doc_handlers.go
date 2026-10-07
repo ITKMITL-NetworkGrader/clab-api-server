@@ -279,7 +279,7 @@ func PutRunningLabAnnotationsHandler(c *gin.Context) {
 // applied (NTG-224). The running document is the topo-file label of the newest container, so
 // an apply that removed the newest containers leaves it on an older file nobody rewrote, and
 // the document goes on listing deleted nodes. applied is the file as read before the apply.
-func syncRunningTopologyDoc(ctx context.Context, labName, appliedPath string, applied []byte) error {
+func syncRunningTopologyDoc(ctx context.Context, labName, fallbackOwner, appliedPath string, applied []byte) error {
 	info, exists, err := lookupLabInfo(ctx, "", labName)
 	if err != nil {
 		return err
@@ -296,15 +296,23 @@ func syncRunningTopologyDoc(ctx context.Context, labName, appliedPath string, ap
 	if running == appliedPath {
 		return nil
 	}
+	owner := strings.TrimSpace(info.Owner)
+	if owner == "" {
+		owner = fallbackOwner
+	}
 	// Relative paths inside the YAML (startup-config) only mean the same in the same directory.
-	// The applied path was resolved inside the owner's lab dir, so this also keeps the write there.
 	if filepath.Dir(running) != filepath.Dir(appliedPath) {
-		log.Warnf("Lab '%s': running topology %s is not beside applied %s; not updated", labName, running, appliedPath)
+		log.Debugf("Lab '%s': running topology is not beside the applied file; not updated", labName)
+		return nil
+	}
+	labDir, _, _, dirErr := getLabDirectoryInfo(owner, labName)
+	if dirErr != nil || !pathIsInsideRoot(labDir, running) {
+		log.Debugf("Lab '%s': running topology is outside the lab directory; not updated", labName)
 		return nil
 	}
 	if stat, statErr := os.Lstat(running); statErr != nil || !stat.Mode().IsRegular() {
-		log.Warnf("Lab '%s': running topology %s is not a regular file; not updated", labName, running)
+		log.Debugf("Lab '%s': running topology is not a regular file; not updated", labName)
 		return nil
 	}
-	return writeLabTopologyDocFile(running, info.Owner, labName, applied)
+	return writeLabTopologyDocFile(running, owner, labName, applied)
 }

@@ -573,6 +573,15 @@ func DeployTopologyHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// applyLab runs containerlab apply; a variable so tests can stub the runtime.
+var applyLab = func(ctx context.Context, opts clab.ApplyOptions) (*clabcore.ApplyResult, error) {
+	svc := GetClabService()
+	if svc == nil {
+		return nil, fmt.Errorf("containerlab service not initialized")
+	}
+	return svc.Apply(ctx, opts)
+}
+
 // @Summary Apply on-disk topology for lab
 // @Description Applies an on-disk topology from the authenticated user's lab directory. If the lab is not running, containerlab apply deploys it; otherwise it reconciles supported topology changes in place.
 // @Description
@@ -599,15 +608,6 @@ func DeployTopologyHandler(c *gin.Context) {
 // @Failure 409 {object} models.ErrorResponse "Conflict"
 // @Failure 500 {object} models.ErrorResponse "Internal server error"
 // @Router /api/v1/labs/{labName}/apply [post]
-// applyLab runs containerlab apply; a variable so tests can stub the runtime.
-var applyLab = func(ctx context.Context, opts clab.ApplyOptions) (*clabcore.ApplyResult, error) {
-	svc := GetClabService()
-	if svc == nil {
-		return nil, fmt.Errorf("containerlab service not initialized")
-	}
-	return svc.Apply(ctx, opts)
-}
-
 // ApplyTopologyHandler applies an on-disk topology identified by lab name.
 func ApplyTopologyHandler(c *gin.Context) {
 	username := c.GetString("username")
@@ -721,8 +721,8 @@ func ApplyTopologyHandler(c *gin.Context) {
 			return models.ApplyLabResponse{}, fmt.Errorf("Failed to apply lab '%s': %s", labName, applyErr.Error())
 		}
 		if !dryRun {
-			if syncErr := syncRunningTopologyDoc(applyCtx, labName, topologyPath, appliedBytes); syncErr != nil {
-				log.Warnf("Lab '%s': applied, but the running topology document was not updated: %v", labName, syncErr)
+			if syncErr := syncRunningTopologyDoc(applyCtx, labName, targetOwner, topologyPath, appliedBytes); syncErr != nil {
+				log.Debugf("Lab '%s': applied, but the running topology document was not updated: %v", labName, syncErr)
 			}
 		}
 		return clab.ApplyResultToResponse(result), nil
