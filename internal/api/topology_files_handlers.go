@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 	clabgit "github.com/srl-labs/containerlab/git"
 	"gopkg.in/yaml.v3"
@@ -692,6 +693,16 @@ func ApplyTopologyHandler(c *gin.Context) {
 		return
 	}
 
+	// NTG-224: what the apply consumes, kept to publish as the running document afterwards.
+	var appliedBytes []byte
+	if !dryRun {
+		var readErr error
+		if appliedBytes, readErr = os.ReadFile(topologyPath); readErr != nil {
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to read topology file: %s", readErr.Error())})
+			return
+		}
+	}
+
 	applyCtx, applyCancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 10*time.Minute)
 	defer applyCancel()
 
@@ -708,6 +719,11 @@ func ApplyTopologyHandler(c *gin.Context) {
 		result, applyErr := applyLab(applyCtx, applyOptions)
 		if applyErr != nil {
 			return models.ApplyLabResponse{}, fmt.Errorf("Failed to apply lab '%s': %s", labName, applyErr.Error())
+		}
+		if !dryRun {
+			if syncErr := syncRunningTopologyDoc(applyCtx, labName, topologyPath, appliedBytes); syncErr != nil {
+				log.Warnf("Lab '%s': applied, but the running topology document was not updated: %v", labName, syncErr)
+			}
 		}
 		return clab.ApplyResultToResponse(result), nil
 	}
