@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -61,6 +62,29 @@ func beginLabOperationOrConflict(c *gin.Context, labName, operation string) (fun
 		Error: fmt.Sprintf("Lab '%s' is busy with %s operation.", labName, active),
 	})
 	return nil, false
+}
+
+// beginLabOperationWaiting is beginLabOperationOrConflict that first waits up to wait for a
+// running operation on the lab to finish. It gives up when the caller has gone.
+func beginLabOperationWaiting(c *gin.Context, labName, operation string, wait time.Duration) (func(), bool) {
+	deadline := time.Now().Add(wait)
+	for {
+		release, _, ok := labOperations.begin(labName, operation)
+		if ok {
+			if c.Request.Context().Err() != nil {
+				release()
+				return nil, false
+			}
+			return release, true
+		}
+		if c.Request.Context().Err() != nil {
+			return nil, false
+		}
+		if time.Now().After(deadline) {
+			return beginLabOperationOrConflict(c, labName, operation)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func ensureLabDestroyed(ctx context.Context, svc *clab.Service, labName string) error {

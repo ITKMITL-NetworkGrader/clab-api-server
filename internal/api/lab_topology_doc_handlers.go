@@ -8,9 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 
 	"github.com/srl-labs/clab-api-server/internal/models"
@@ -23,55 +23,10 @@ type labTopologyDocPaths struct {
 	ownerUsername string
 }
 
-type cachedLabInfo struct {
-	expiresAt  time.Time
-	exists     bool
-	owner      string
-	absLabPath string
-}
-
-const labTopologyInfoCacheTTL = 1500 * time.Millisecond
-
-var labTopologyInfoCache sync.Map
-
-func getLabInfoCached(ctx context.Context, username, labName string) (*models.ClabContainerInfo, bool, error) {
-	cacheKey := username + "\x00" + labName
-
-	if cachedValue, ok := labTopologyInfoCache.Load(cacheKey); ok {
-		if cached, typed := cachedValue.(cachedLabInfo); typed {
-			if time.Now().Before(cached.expiresAt) {
-				if !cached.exists {
-					return nil, false, nil
-				}
-				return &models.ClabContainerInfo{
-					Owner:      cached.owner,
-					AbsLabPath: cached.absLabPath,
-				}, true, nil
-			}
-			labTopologyInfoCache.Delete(cacheKey)
-		}
-	}
-
-	info, exists, err := getLabInfo(ctx, username, labName)
-	if err != nil {
-		return nil, false, err
-	}
-
-	record := cachedLabInfo{
-		expiresAt: time.Now().Add(labTopologyInfoCacheTTL),
-		exists:    exists,
-	}
-	if exists && info != nil {
-		record.owner = info.Owner
-		record.absLabPath = info.AbsLabPath
-	}
-	labTopologyInfoCache.Store(cacheKey, record)
-
-	if !exists || info == nil {
-		return nil, false, nil
-	}
-	return info, true, nil
-}
+// lookupLabInfo resolves a lab's newest container info; a variable so tests can stub it.
+// NTG-224: it is not cached. A 1.5 s cache sent the write after an apply to the file the
+// newest container pointed at before the apply.
+var lookupLabInfo = getLabInfo
 
 func resolveLabTopologyDocPaths(c *gin.Context, docType string) (*labTopologyDocPaths, error) {
 	username := c.GetString("username")
@@ -102,13 +57,13 @@ func resolveLabTopologyDocPaths(c *gin.Context, docType string) (*labTopologyDoc
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	labInfo, exists, lookupErr := getLabInfoCached(ctx, username, labName)
+	labInfo, exists, lookupErr := lookupLabInfo(ctx, username, labName)
 	if lookupErr != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to check lab '%s' status: %s", labName, lookupErr.Error())})
 		return nil, lookupErr
 	}
 
-	if !exists {
+	if !exists || labInfo == nil {
 		return paths, nil
 	}
 
@@ -176,27 +131,57 @@ func writeLabTopologyDocFile(absPath, ownerUsername, labName string, body []byte
 		return fmt.Errorf("failed to ensure lab directory: %w", mkdirErr)
 	}
 
-	if writeErr := os.WriteFile(absPath, body, 0640); writeErr != nil {
+	// NTG-224: write a temp file and rename it over the target, so a reader never sees a
+	// half-written document.
+	tmp, createErr := os.CreateTemp(targetDir, "."+filepath.Base(absPath)+".tmp-*")
+	if createErr != nil {
+		return fmt.Errorf("failed to write file: %w", createErr)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // nothing left to remove after a successful rename
+	if _, writeErr := tmp.Write(body); writeErr != nil {
+		tmp.Close()
 		return fmt.Errorf("failed to write file: %w", writeErr)
+	}
+	if closeErr := tmp.Close(); closeErr != nil {
+		return fmt.Errorf("failed to write file: %w", closeErr)
+	}
+	if chmodErr := os.Chmod(tmpPath, 0640); chmodErr != nil {
+		return fmt.Errorf("failed to write file: %w", chmodErr)
 	}
 
 	if _, uid, gid, uidErr := getLabDirectoryInfo(ownerUsername, labName); uidErr == nil {
 		_ = os.Chown(targetDir, uid, gid)
-		_ = os.Chown(absPath, uid, gid)
+		_ = os.Chown(tmpPath, uid, gid)
 	}
 
+	if renameErr := os.Rename(tmpPath, absPath); renameErr != nil {
+		return fmt.Errorf("failed to write file: %w", renameErr)
+	}
 	return nil
 }
 
-func writeLabTopologyDoc(c *gin.Context, docType string) {
-	paths, err := resolveLabTopologyDocPaths(c, docType)
-	if err != nil {
-		return
-	}
+// topologyDocLockWait bounds how long a topology document write waits for a lab operation.
+// It stays under Elysia's 15 s request timeout.
+var topologyDocLockWait = 10 * time.Second
 
+func writeLabTopologyDoc(c *gin.Context, docType string) {
 	body, readErr := io.ReadAll(c.Request.Body)
 	if readErr != nil {
 		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Failed to read request body"})
+		return
+	}
+
+	// NTG-224: wait for a running lab operation, so this write cannot land between an apply
+	// and the apply's own update of the running document.
+	releaseLabOperation, ok := beginLabOperationWaiting(c, c.Param("labName"), "topology-doc", topologyDocLockWait)
+	if !ok {
+		return
+	}
+	defer releaseLabOperation()
+
+	paths, err := resolveLabTopologyDocPaths(c, docType)
+	if err != nil {
 		return
 	}
 
@@ -288,4 +273,46 @@ func GetRunningLabAnnotationsHandler(c *gin.Context) {
 // PutRunningLabAnnotationsHandler updates or creates the annotations JSON associated with a lab.
 func PutRunningLabAnnotationsHandler(c *gin.Context) {
 	writeLabTopologyDoc(c, "annotations")
+}
+
+// syncRunningTopologyDoc makes the lab's running topology document hold what an apply just
+// applied (NTG-224). The running document is the topo-file label of the newest container, so
+// an apply that removed the newest containers leaves it on an older file nobody rewrote, and
+// the document goes on listing deleted nodes. applied is the file as read before the apply.
+func syncRunningTopologyDoc(ctx context.Context, labName, fallbackOwner, appliedPath string, applied []byte) error {
+	info, exists, err := lookupLabInfo(ctx, "", labName)
+	if err != nil {
+		return err
+	}
+	if !exists || info == nil {
+		return nil
+	}
+	running := strings.TrimSpace(info.AbsLabPath)
+	if running == "" || strings.HasPrefix(running, "http://") || strings.HasPrefix(running, "https://") {
+		return nil
+	}
+	running = filepath.Clean(running)
+	appliedPath = filepath.Clean(appliedPath)
+	if running == appliedPath {
+		return nil
+	}
+	owner := strings.TrimSpace(info.Owner)
+	if owner == "" {
+		owner = fallbackOwner
+	}
+	// Relative paths inside the YAML (startup-config) only mean the same in the same directory.
+	if filepath.Dir(running) != filepath.Dir(appliedPath) {
+		log.Debugf("Lab '%s': running topology is not beside the applied file; not updated", labName)
+		return nil
+	}
+	labDir, _, _, dirErr := getLabDirectoryInfo(owner, labName)
+	if dirErr != nil || !pathIsInsideRoot(labDir, running) {
+		log.Debugf("Lab '%s': running topology is outside the lab directory; not updated", labName)
+		return nil
+	}
+	if stat, statErr := os.Lstat(running); statErr != nil || !stat.Mode().IsRegular() {
+		log.Debugf("Lab '%s': running topology is not a regular file; not updated", labName)
+		return nil
+	}
+	return writeLabTopologyDocFile(running, owner, labName, applied)
 }

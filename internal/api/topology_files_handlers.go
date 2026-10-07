@@ -14,12 +14,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/log"
 	"github.com/gin-gonic/gin"
 	clabgit "github.com/srl-labs/containerlab/git"
 	"gopkg.in/yaml.v3"
 
 	"github.com/srl-labs/clab-api-server/internal/clab"
 	"github.com/srl-labs/clab-api-server/internal/models"
+	clabcore "github.com/srl-labs/containerlab/core"
 )
 
 func resolveDefaultTopologyDocPath(username, labName, docType string) (string, string, int, int, error) {
@@ -571,6 +573,15 @@ func DeployTopologyHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
+// applyLab runs containerlab apply; a variable so tests can stub the runtime.
+var applyLab = func(ctx context.Context, opts clab.ApplyOptions) (*clabcore.ApplyResult, error) {
+	svc := GetClabService()
+	if svc == nil {
+		return nil, fmt.Errorf("containerlab service not initialized")
+	}
+	return svc.Apply(ctx, opts)
+}
+
 // @Summary Apply on-disk topology for lab
 // @Description Applies an on-disk topology from the authenticated user's lab directory. If the lab is not running, containerlab apply deploys it; otherwise it reconciles supported topology changes in place.
 // @Description
@@ -629,16 +640,10 @@ func ApplyTopologyHandler(c *gin.Context) {
 	}
 	defer releaseLabOperation()
 
-	svc := GetClabService()
-	if svc == nil {
-		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: "Containerlab service not initialized"})
-		return
-	}
-
 	checkCtx, checkCancel := context.WithTimeout(c.Request.Context(), 2*time.Minute)
 	defer checkCancel()
 
-	labInfo, exists, checkErr := getLabInfo(checkCtx, username, labName)
+	labInfo, exists, checkErr := lookupLabInfo(checkCtx, username, labName)
 	if checkErr != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Error checking lab '%s' status: %s", labName, checkErr.Error())})
 		return
@@ -688,6 +693,16 @@ func ApplyTopologyHandler(c *gin.Context) {
 		return
 	}
 
+	// NTG-224: what the apply consumes, kept to publish as the running document afterwards.
+	var appliedBytes []byte
+	if !dryRun {
+		var readErr error
+		if appliedBytes, readErr = os.ReadFile(topologyPath); readErr != nil {
+			c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: fmt.Sprintf("Failed to read topology file: %s", readErr.Error())})
+			return
+		}
+	}
+
 	applyCtx, applyCancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 10*time.Minute)
 	defer applyCancel()
 
@@ -701,9 +716,14 @@ func ApplyTopologyHandler(c *gin.Context) {
 	}
 
 	runApply := func() (models.ApplyLabResponse, error) {
-		result, applyErr := svc.Apply(applyCtx, applyOptions)
+		result, applyErr := applyLab(applyCtx, applyOptions)
 		if applyErr != nil {
 			return models.ApplyLabResponse{}, fmt.Errorf("Failed to apply lab '%s': %s", labName, applyErr.Error())
+		}
+		if !dryRun {
+			if syncErr := syncRunningTopologyDoc(applyCtx, labName, targetOwner, topologyPath, appliedBytes); syncErr != nil {
+				log.Debugf("Lab '%s': applied, but the running topology document was not updated: %v", labName, syncErr)
+			}
 		}
 		return clab.ApplyResultToResponse(result), nil
 	}
