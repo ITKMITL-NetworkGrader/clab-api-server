@@ -38,6 +38,7 @@ type Config struct {
 	SSHBasePort                  int           `mapstructure:"SSH_BASE_PORT"`   // Base port for SSH proxy allocation
 	SSHMaxPort                   int           `mapstructure:"SSH_MAX_PORT"`    // Maximum port for SSH proxy allocation
 	TerminalMaxSessionsPerUser   int           `mapstructure:"TERMINAL_MAX_SESSIONS_PER_USER"`
+	TerminalSessionTTL           time.Duration `mapstructure:"TERMINAL_SESSION_TTL"`
 }
 
 var AppConfig Config
@@ -74,6 +75,7 @@ func LoadConfig(envFilePath string) error {
 	viper.SetDefault("SSH_BASE_PORT", 2223) // Default base port for SSH proxy
 	viper.SetDefault("SSH_MAX_PORT", 2322)  // Default max port for SSH proxy (allows 100 sessions)
 	viper.SetDefault("TERMINAL_MAX_SESSIONS_PER_USER", 128)
+	viper.SetDefault("TERMINAL_SESSION_TTL", "1h") // NTG-251: a session ends this long after it opens, in use or not
 
 	err := viper.ReadInConfig()
 
@@ -112,6 +114,11 @@ func LoadConfig(envFilePath string) error {
 			return fmt.Errorf("CLAB_LABS_ROOT must be an absolute path")
 		}
 		AppConfig.ClabLabsRoot = filepath.Clean(AppConfig.ClabLabsRoot)
+	}
+
+	// The terminal manager quietly falls back to 1 h on a value <= 0; refuse it here instead.
+	if AppConfig.TerminalSessionTTL <= 0 {
+		return fmt.Errorf("TERMINAL_SESSION_TTL must be a positive duration such as 6h, got %v", AppConfig.TerminalSessionTTL)
 	}
 
 	// No need to convert - the value is already a time.Duration thanks to the type in the struct
