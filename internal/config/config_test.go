@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 	termsvc "github.com/srl-labs/clab-api-server/internal/terminal"
@@ -132,5 +133,57 @@ func TestLoadConfigRejectsTildeClabLabsRoot(t *testing.T) {
 	viper.Reset()
 	if err := LoadConfig(".env"); err == nil {
 		t.Fatal("expected LoadConfig to reject tilde CLAB_LABS_ROOT")
+	}
+}
+
+// NTG-251: an exam console outlives the 1 h default session TTL, so the clab host sets its own.
+func loadConfigInTempDir(t *testing.T, envFile string) error {
+	t.Helper()
+	originalWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(originalWd)
+		viper.Reset()
+	})
+	if envFile != "" {
+		if err := os.WriteFile(".env", []byte(envFile), 0o600); err != nil {
+			t.Fatalf("write .env: %v", err)
+		}
+	}
+	viper.Reset()
+	return LoadConfig(".env")
+}
+
+func TestLoadConfigTerminalSessionTTLDefault(t *testing.T) {
+	if err := loadConfigInTempDir(t, ""); err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	if AppConfig.TerminalSessionTTL != termsvc.DefaultSessionTTL {
+		t.Fatalf("expected TERMINAL_SESSION_TTL default %v, got %v", termsvc.DefaultSessionTTL, AppConfig.TerminalSessionTTL)
+	}
+}
+
+func TestLoadConfigTerminalSessionTTLFromEnvFile(t *testing.T) {
+	if err := loadConfigInTempDir(t, "TERMINAL_SESSION_TTL=6h\n"); err != nil {
+		t.Fatalf("LoadConfig returned error: %v", err)
+	}
+	if AppConfig.TerminalSessionTTL != 6*time.Hour {
+		t.Fatalf("expected TERMINAL_SESSION_TTL 6h, got %v", AppConfig.TerminalSessionTTL)
+	}
+}
+
+func TestLoadConfigTerminalSessionTTLRejectsUnusableValues(t *testing.T) {
+	for _, value := range []string{"0", "-1h", "abc"} {
+		t.Run(value, func(t *testing.T) {
+			err := loadConfigInTempDir(t, "TERMINAL_SESSION_TTL="+value+"\n")
+			if err == nil {
+				t.Fatalf("expected an error for TERMINAL_SESSION_TTL=%s, got TTL %v", value, AppConfig.TerminalSessionTTL)
+			}
+		})
 	}
 }

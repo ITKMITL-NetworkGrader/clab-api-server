@@ -37,7 +37,7 @@ type terminalStreamClientMessage struct {
 func InitTerminalManager() {
 	terminalManager = termsvc.NewManager(
 		termsvc.DefaultCleanupTick,
-		termsvc.DefaultSessionTTL,
+		config.AppConfig.TerminalSessionTTL,
 		termsvc.DefaultIdleTimeout,
 		config.AppConfig.TerminalMaxSessionsPerUser,
 	)
