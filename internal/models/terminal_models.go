@@ -5,13 +5,16 @@ import "time"
 type TerminalProtocol string
 
 const (
-	TerminalProtocolSSH    TerminalProtocol = "ssh"
-	TerminalProtocolShell  TerminalProtocol = "shell"
-	TerminalProtocolTelnet TerminalProtocol = "telnet"
+	TerminalProtocolSSH     TerminalProtocol = "ssh"
+	TerminalProtocolShell   TerminalProtocol = "shell"
+	TerminalProtocolTelnet  TerminalProtocol = "telnet"
+	TerminalProtocolConsole TerminalProtocol = "console"
+	// TerminalProtocolConsoleControl is the grader's: it holds the IOL console's write lock (NTG-254).
+	TerminalProtocolConsoleControl TerminalProtocol = "console-control"
 )
 
 type TerminalSessionRequest struct {
-	// Protocol selects the terminal transport: ssh, shell, or telnet.
+	// Protocol selects the terminal transport: ssh, shell, telnet, console, or console-control.
 	Protocol TerminalProtocol `json:"protocol" binding:"required"`
 	// Cols is the requested terminal width in characters.
 	Cols int `json:"cols"`
