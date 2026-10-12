@@ -17,6 +17,7 @@ import (
 
 	"github.com/charmbracelet/log"
 	"github.com/creack/pty"
+	"golang.org/x/term"
 
 	"github.com/srl-labs/clab-api-server/internal/models"
 )
@@ -214,6 +215,18 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 		return nil, fmt.Errorf("failed to start terminal session: %w", err)
 	}
 
+	if protocol == models.TerminalProtocolConsole || protocol == models.TerminalProtocolConsoleControl {
+		if err := rawPTY(ptmx); err != nil {
+			_ = cmd.Process.Kill()
+			_ = ptmx.Close()
+			_ = cmd.Wait()
+			if counted {
+				m.releaseUserSessionCapacity(username)
+			}
+			return nil, fmt.Errorf("failed to start terminal session: %w", err)
+		}
+	}
+
 	session.cmd = cmd
 	session.ptyFile = ptmx
 
@@ -241,6 +254,13 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 
 // countsTowardUserCap: the grader's control sessions are bounded by its worker count, and must still
 // open when students hold every terminal the cap allows (NTG-254).
+// rawPTY: `exec -i` leaves the host pty cooked (the runtime CLI only sets raw mode for -t), which would
+// echo input, turn Ctrl-C into SIGINT for the CLI and \n into \r\n. Console bytes must reach IOS as sent.
+func rawPTY(f *os.File) error {
+	_, err := term.MakeRaw(int(f.Fd()))
+	return err
+}
+
 func (m *Manager) countsTowardUserCap(protocol models.TerminalProtocol) bool {
 	return protocol != models.TerminalProtocolConsoleControl
 }
@@ -628,7 +648,9 @@ func resolveLaunchCommand(protocol models.TerminalProtocol, opts CreateSessionOp
 		if protocol == models.TerminalProtocolConsoleControl {
 			socket = "control"
 		}
-		return []string{resolveRuntime(opts.Runtime), "exec", "-it", opts.ContainerID, "/console-attach", socket}, nil
+		// -i without -t: with a tty, docker keeps the exec'd attach running after its client is killed,
+		// so a closed grader session would hold the console lock forever. Without one, stdin EOF ends it.
+		return []string{resolveRuntime(opts.Runtime), "exec", "-i", opts.ContainerID, "/console-attach", socket}, nil
 	default:
 		return nil, fmt.Errorf("unsupported terminal protocol %q", protocol)
 	}
