@@ -252,8 +252,6 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 	return &info, nil
 }
 
-// countsTowardUserCap: the grader's control sessions are bounded by its worker count, and must still
-// open when students hold every terminal the cap allows (NTG-254).
 // rawPTY: `exec -i` leaves the host pty cooked (the runtime CLI only sets raw mode for -t), which would
 // echo input, turn Ctrl-C into SIGINT for the CLI and \n into \r\n. Console bytes must reach IOS as sent.
 func rawPTY(f *os.File) error {
@@ -261,6 +259,8 @@ func rawPTY(f *os.File) error {
 	return err
 }
 
+// countsTowardUserCap: the grader's control sessions are bounded by its worker count, and must still
+// open when students hold every terminal the cap allows (NTG-254).
 func (m *Manager) countsTowardUserCap(protocol models.TerminalProtocol) bool {
 	return protocol != models.TerminalProtocolConsoleControl
 }
