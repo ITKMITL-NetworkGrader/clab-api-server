@@ -236,4 +236,9 @@ func TestCountSessionsForUserIgnoresConsoleControl(t *testing.T) {
 	if err := m.reserveUserSessionCapacity("grader"); err != nil {
 		t.Fatalf("control sessions must not fill the cap: %v", err)
 	}
+	m.releaseUserSessionCapacity("grader")
+	m.sessions["con1"] = &Session{username: "grader", state: "ready", protocol: models.TerminalProtocolConsole}
+	if err := m.reserveUserSessionCapacity("grader"); err != ErrTooManySessions {
+		t.Fatalf("a student console session must fill the cap, got %v", err)
+	}
 }
