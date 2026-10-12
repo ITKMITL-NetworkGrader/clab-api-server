@@ -177,8 +177,11 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 	}
 
 	username := strings.TrimSpace(opts.Username)
-	if err := m.reserveUserSessionCapacity(username); err != nil {
-		return nil, err
+	counted := m.countsTowardUserCap(protocol)
+	if counted {
+		if err := m.reserveUserSessionCapacity(username); err != nil {
+			return nil, err
+		}
 	}
 
 	now := time.Now().UTC()
@@ -205,7 +208,9 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 		Rows: uint16(rows),
 	})
 	if err != nil {
-		m.releaseUserSessionCapacity(username)
+		if counted {
+			m.releaseUserSessionCapacity(username)
+		}
 		return nil, fmt.Errorf("failed to start terminal session: %w", err)
 	}
 
@@ -213,7 +218,9 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 	session.ptyFile = ptmx
 
 	m.mu.Lock()
-	m.releaseUserSessionCapacityLocked(session.username)
+	if counted {
+		m.releaseUserSessionCapacityLocked(session.username)
+	}
 	m.sessions[session.id] = session
 	m.mu.Unlock()
 
@@ -230,6 +237,12 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 
 	info := session.Snapshot()
 	return &info, nil
+}
+
+// countsTowardUserCap: the grader's control sessions are bounded by its worker count, and must still
+// open when students hold every terminal the cap allows (NTG-254).
+func (m *Manager) countsTowardUserCap(protocol models.TerminalProtocol) bool {
+	return protocol != models.TerminalProtocolConsoleControl
 }
 
 func (m *Manager) reserveUserSessionCapacity(username string) error {
@@ -309,7 +322,7 @@ func (m *Manager) countSessionsForUserLocked(username string) int {
 		owner := session.username
 		state := session.state
 		session.mu.RUnlock()
-		if owner == username && state != "closed" {
+		if owner == username && state != "closed" && m.countsTowardUserCap(session.protocol) {
 			count++
 		}
 	}
@@ -553,6 +566,10 @@ func normalizeProtocol(protocol models.TerminalProtocol) (models.TerminalProtoco
 		return models.TerminalProtocolShell, nil
 	case models.TerminalProtocolTelnet:
 		return models.TerminalProtocolTelnet, nil
+	case models.TerminalProtocolConsole:
+		return models.TerminalProtocolConsole, nil
+	case models.TerminalProtocolConsoleControl:
+		return models.TerminalProtocolConsoleControl, nil
 	default:
 		return "", fmt.Errorf("unsupported terminal protocol %q", protocol)
 	}
@@ -601,6 +618,17 @@ func resolveLaunchCommand(protocol models.TerminalProtocol, opts CreateSessionOp
 			"127.0.0.1",
 			fmt.Sprintf("%d", port),
 		}, nil
+	case models.TerminalProtocolConsole, models.TerminalProtocolConsoleControl:
+		// NTG-254: the IOL image's relay serves con0 over unix sockets inside the container.
+		if strings.TrimSpace(opts.ContainerKind) != "cisco_iol" {
+			// The wording is what writeTerminalManagerError maps to 400.
+			return nil, fmt.Errorf("unsupported terminal protocol %q for kind %q (cisco_iol only)", protocol, opts.ContainerKind)
+		}
+		socket := "console"
+		if protocol == models.TerminalProtocolConsoleControl {
+			socket = "control"
+		}
+		return []string{resolveRuntime(opts.Runtime), "exec", "-it", opts.ContainerID, "/console-attach", socket}, nil
 	default:
 		return nil, fmt.Errorf("unsupported terminal protocol %q", protocol)
 	}

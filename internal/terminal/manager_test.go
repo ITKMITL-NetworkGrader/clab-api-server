@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -182,5 +183,57 @@ func TestResolveLaunchCommandSSHAddsLegacyAlgorithms(t *testing.T) {
 	}
 	if last := command[len(command)-1]; last != "admin@172.20.15.2" {
 		t.Fatalf("unexpected ssh target %q", last)
+	}
+}
+
+func TestResolveLaunchCommandConsoleExecsAttach(t *testing.T) {
+	opts := CreateSessionOptions{ContainerID: "cid", ContainerKind: "cisco_iol", Runtime: "docker"}
+	for protocol, socket := range map[models.TerminalProtocol]string{
+		models.TerminalProtocolConsole:        "console",
+		models.TerminalProtocolConsoleControl: "control",
+	} {
+		got, err := resolveLaunchCommand(protocol, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"docker", "exec", "-it", "cid", "/console-attach", socket}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: got %v want %v", protocol, got, want)
+		}
+	}
+}
+
+func TestResolveLaunchCommandConsoleOnlyForIOL(t *testing.T) {
+	_, err := resolveLaunchCommand(models.TerminalProtocolConsole, CreateSessionOptions{ContainerID: "cid", ContainerKind: "linux"})
+	// writeTerminalManagerError maps this text to 400, not 500.
+	if err == nil || !strings.Contains(err.Error(), "unsupported terminal protocol") {
+		t.Fatalf("console on a linux node must be refused as an unsupported protocol, got %v", err)
+	}
+}
+
+func TestNormalizeProtocolAcceptsConsole(t *testing.T) {
+	for _, p := range []string{"console", "CONSOLE", " console-control "} {
+		if _, err := normalizeProtocol(models.TerminalProtocol(p)); err != nil {
+			t.Errorf("%q: %v", p, err)
+		}
+	}
+}
+
+func TestConsoleControlSkipsUserCap(t *testing.T) {
+	m := newTestManager(t, 1)
+	if !m.countsTowardUserCap(models.TerminalProtocolConsole) {
+		t.Error("student console sessions must count toward the cap")
+	}
+	if m.countsTowardUserCap(models.TerminalProtocolConsoleControl) {
+		t.Error("grader control sessions must not count toward the cap")
+	}
+}
+
+func TestCountSessionsForUserIgnoresConsoleControl(t *testing.T) {
+	m := newTestManager(t, 1)
+	m.sessions["ctl1"] = &Session{username: "grader", state: "ready", protocol: models.TerminalProtocolConsoleControl}
+	m.sessions["ctl2"] = &Session{username: "grader", state: "ready", protocol: models.TerminalProtocolConsoleControl}
+	if err := m.reserveUserSessionCapacity("grader"); err != nil {
+		t.Fatalf("control sessions must not fill the cap: %v", err)
 	}
 }
