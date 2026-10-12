@@ -6,6 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
+
 	"github.com/srl-labs/clab-api-server/internal/models"
 )
 
@@ -196,10 +199,31 @@ func TestResolveLaunchCommandConsoleExecsAttach(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []string{"docker", "exec", "-it", "cid", "/console-attach", socket}
+		// -i without -t: a closed session must end the attach inside the container too (stdin EOF).
+		// With a tty, docker leaves the exec'd process running after the client dies (NTG-254 G1.3).
+		want := []string{"docker", "exec", "-i", "cid", "/console-attach", socket}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: got %v want %v", protocol, got, want)
 		}
+	}
+}
+
+func TestRawPTYPassesBytesUntouched(t *testing.T) {
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ptmx.Close()
+	defer tty.Close()
+	if err := rawPTY(ptmx); err != nil {
+		t.Fatal(err)
+	}
+	tio, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tio.Lflag&(unix.ICANON|unix.ECHO|unix.ISIG) != 0 || tio.Oflag&unix.OPOST != 0 || tio.Iflag&unix.ICRNL != 0 {
+		t.Fatalf("pty still cooks console bytes: lflag=%#x oflag=%#x iflag=%#x", tio.Lflag, tio.Oflag, tio.Iflag)
 	}
 }
 
