@@ -55,8 +55,8 @@ func ShutdownTerminalManager() {
 // @Description
 // @Description **Protocol behavior**
 // @Description - `ssh`: launches the server-side `ssh` client in a PTY directly to the node management IP and streams that terminal over WebSocket.
-// @Description - `shell`: launches a PTY-backed `docker|podman exec -it <container> <server-selected-command>` session.
-// @Description - `telnet`: launches a PTY-backed `docker|podman exec -it <container> telnet 127.0.0.1 <port>` session.
+// @Description - `shell`: launches a PTY-backed `docker|podman exec -it <container> <server-selected-command>` session. Processes it starts in the container are hung up (SIGHUP) when the session ends.
+// @Description - `telnet`: launches a PTY-backed `docker|podman exec -it <container> telnet 127.0.0.1 <port>` session. Processes it starts in the container are hung up (SIGHUP) when the session ends.
 // @Description
 // @Description **Security notes**
 // @Description - The backend chooses the launch command for every protocol. Clients choose only the protocol and terminal size.
