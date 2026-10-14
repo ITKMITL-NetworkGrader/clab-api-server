@@ -1,6 +1,7 @@
 package terminal
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -9,7 +10,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -172,7 +175,8 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 	}
 
 	cols, rows := sanitizeTerminalSize(opts.Cols, opts.Rows)
-	command, err := resolveLaunchCommand(protocol, opts)
+	sessionID := newSessionID()
+	command, err := resolveLaunchCommand(protocol, sessionID, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +192,7 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 	now := time.Now().UTC()
 	session := &Session{
 		manager:      m,
-		id:           newSessionID(),
+		id:           sessionID,
 		username:     username,
 		labName:      strings.TrimSpace(opts.LabName),
 		nodeName:     strings.TrimSpace(opts.NodeName),
@@ -524,6 +528,12 @@ func (s *Session) waitForProcess() {
 		_ = file.Close()
 	}
 
+	// After the state is closed: reading a D-state process's environ can block, and the
+	// session must not sit in the user's cap meanwhile.
+	if s.protocol == models.TerminalProtocolShell || s.protocol == models.TerminalProtocolTelnet {
+		killSessionProcesses(s.id)
+	}
+
 	log.Infof(
 		"terminal session closed: user=%s lab=%s node=%s protocol=%s session=%s exitCode=%d",
 		s.username,
@@ -602,7 +612,7 @@ var LegacySSHOptions = []string{
 	"-o", "HostKeyAlgorithms=+ssh-rsa",
 }
 
-func resolveLaunchCommand(protocol models.TerminalProtocol, opts CreateSessionOptions) ([]string, error) {
+func resolveLaunchCommand(protocol models.TerminalProtocol, sessionID string, opts CreateSessionOptions) ([]string, error) {
 	switch protocol {
 	case models.TerminalProtocolSSH:
 		ip := stripCIDRSuffix(opts.ContainerIP)
@@ -623,7 +633,7 @@ func resolveLaunchCommand(protocol models.TerminalProtocol, opts CreateSessionOp
 		), nil
 	case models.TerminalProtocolShell:
 		command := resolveShellCommand(opts.ContainerKind)
-		return append([]string{resolveRuntime(opts.Runtime), "exec", "-it", opts.ContainerID}, command...), nil
+		return append([]string{resolveRuntime(opts.Runtime), "exec", "-it", "-e", sessionEnvKey + "=" + sessionID, opts.ContainerID}, command...), nil
 	case models.TerminalProtocolTelnet:
 		port := opts.TelnetPort
 		if port <= 0 || port > 65535 {
@@ -633,6 +643,7 @@ func resolveLaunchCommand(protocol models.TerminalProtocol, opts CreateSessionOp
 			resolveRuntime(opts.Runtime),
 			"exec",
 			"-it",
+			"-e", sessionEnvKey + "=" + sessionID,
 			opts.ContainerID,
 			"telnet",
 			"127.0.0.1",
@@ -707,4 +718,30 @@ func newSessionID() string {
 		panic(fmt.Errorf("failed to generate terminal session ID: %w", err))
 	}
 	return hex.EncodeToString(buffer[:])
+}
+
+// sessionEnvKey marks every process a shell/telnet session starts in the container.
+const sessionEnvKey = "NG_TERM_SESSION"
+
+// killSessionProcesses hangs up the processes a shell/telnet session left in its container.
+// docker only closes an exec's stdin on client disconnect without a tty, so a -t shell never
+// gets EOF (NTG-256); children such as ping inherit the marker env and get hung up too.
+// ponytail: works because the API server runs on the host as root and sees container processes
+// in the host /proc; inside a container it silently does nothing. Accepted limits: SIGHUP only, so
+// nohup'd, trapped, or `env -u`'d processes survive (like with ssh); a session terminated right at
+// creation can miss an exec that has not started yet; a pid can be reused between the read and the
+// kill (upgrade path: pidfd_open + pidfd_send_signal).
+func killSessionProcesses(sessionID string) {
+	marker := []byte("\x00" + sessionEnvKey + "=" + sessionID + "\x00")
+	environs, _ := filepath.Glob("/proc/[0-9]*/environ")
+	for _, path := range environs {
+		data, err := os.ReadFile(path)
+		if err != nil || !bytes.Contains(append([]byte{0}, data...), marker) {
+			continue
+		}
+		pid, err := strconv.Atoi(filepath.Base(filepath.Dir(path)))
+		if err == nil {
+			_ = syscall.Kill(pid, syscall.SIGHUP)
+		}
+	}
 }

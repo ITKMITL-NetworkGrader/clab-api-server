@@ -1,6 +1,8 @@
 package terminal
 
 import (
+	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -23,7 +25,7 @@ func newTestManager(t *testing.T, maxPerUser int) *Manager {
 }
 
 func TestResolveLaunchCommandShellAllowlist(t *testing.T) {
-	command, err := resolveLaunchCommand(models.TerminalProtocolShell, CreateSessionOptions{
+	command, err := resolveLaunchCommand(models.TerminalProtocolShell, "sid-1", CreateSessionOptions{
 		Runtime:       "docker",
 		ContainerID:   "cid-123",
 		ContainerKind: "nokia_srlinux",
@@ -32,14 +34,14 @@ func TestResolveLaunchCommandShellAllowlist(t *testing.T) {
 		t.Fatalf("resolveLaunchCommand returned unexpected error: %v", err)
 	}
 
-	expected := []string{"docker", "exec", "-it", "cid-123", "sr_cli"}
+	expected := []string{"docker", "exec", "-it", "-e", "NG_TERM_SESSION=sid-1", "cid-123", "sr_cli"}
 	if strings.Join(command, " ") != strings.Join(expected, " ") {
 		t.Fatalf("unexpected shell command: got %v want %v", command, expected)
 	}
 }
 
 func TestResolveLaunchCommandFallbackShell(t *testing.T) {
-	command, err := resolveLaunchCommand(models.TerminalProtocolShell, CreateSessionOptions{
+	command, err := resolveLaunchCommand(models.TerminalProtocolShell, "sid-1", CreateSessionOptions{
 		Runtime:       "podman",
 		ContainerID:   "cid-456",
 		ContainerKind: "unknown-kind",
@@ -48,14 +50,14 @@ func TestResolveLaunchCommandFallbackShell(t *testing.T) {
 		t.Fatalf("resolveLaunchCommand returned unexpected error: %v", err)
 	}
 
-	expected := []string{"podman", "exec", "-it", "cid-456", "sh"}
+	expected := []string{"podman", "exec", "-it", "-e", "NG_TERM_SESSION=sid-1", "cid-456", "sh"}
 	if strings.Join(command, " ") != strings.Join(expected, " ") {
 		t.Fatalf("unexpected fallback shell command: got %v want %v", command, expected)
 	}
 }
 
 func TestResolveLaunchCommandSSHUsesDirectArgv(t *testing.T) {
-	command, err := resolveLaunchCommand(models.TerminalProtocolSSH, CreateSessionOptions{
+	command, err := resolveLaunchCommand(models.TerminalProtocolSSH, "sid-1", CreateSessionOptions{
 		ContainerIP:   "172.20.20.2/24",
 		ContainerKind: "cisco_xrd",
 	})
@@ -79,7 +81,7 @@ func TestResolveLaunchCommandSSHUsesDirectArgv(t *testing.T) {
 }
 
 func TestResolveLaunchCommandTelnetUsesDirectArgv(t *testing.T) {
-	command, err := resolveLaunchCommand(models.TerminalProtocolTelnet, CreateSessionOptions{
+	command, err := resolveLaunchCommand(models.TerminalProtocolTelnet, "sid-1", CreateSessionOptions{
 		Runtime:     "docker",
 		ContainerID: "cid-789",
 		TelnetPort:  7001,
@@ -88,7 +90,7 @@ func TestResolveLaunchCommandTelnetUsesDirectArgv(t *testing.T) {
 		t.Fatalf("resolveLaunchCommand returned unexpected error: %v", err)
 	}
 
-	expected := []string{"docker", "exec", "-it", "cid-789", "telnet", "127.0.0.1", "7001"}
+	expected := []string{"docker", "exec", "-it", "-e", "NG_TERM_SESSION=sid-1", "cid-789", "telnet", "127.0.0.1", "7001"}
 	if strings.Join(command, " ") != strings.Join(expected, " ") {
 		t.Fatalf("unexpected telnet command: got %v want %v", command, expected)
 	}
@@ -102,7 +104,7 @@ func TestResolveLaunchCommandTelnetUsesDirectArgv(t *testing.T) {
 }
 
 func TestResolveLaunchCommandTelnetDefaultsPort(t *testing.T) {
-	command, err := resolveLaunchCommand(models.TerminalProtocolTelnet, CreateSessionOptions{
+	command, err := resolveLaunchCommand(models.TerminalProtocolTelnet, "sid-1", CreateSessionOptions{
 		Runtime:     "podman",
 		ContainerID: "cid-999",
 		TelnetPort:  0,
@@ -111,7 +113,7 @@ func TestResolveLaunchCommandTelnetDefaultsPort(t *testing.T) {
 		t.Fatalf("resolveLaunchCommand returned unexpected error: %v", err)
 	}
 
-	expected := []string{"podman", "exec", "-it", "cid-999", "telnet", "127.0.0.1", "5000"}
+	expected := []string{"podman", "exec", "-it", "-e", "NG_TERM_SESSION=sid-1", "cid-999", "telnet", "127.0.0.1", "5000"}
 	if strings.Join(command, " ") != strings.Join(expected, " ") {
 		t.Fatalf("unexpected default telnet command: got %v want %v", command, expected)
 	}
@@ -168,7 +170,7 @@ func TestReserveUserSessionCapacityIgnoresClosedSessions(t *testing.T) {
 // NTG-194: IOL 15 only offers SHA-1 kex and ssh-rsa host keys, which OpenSSH 9 leaves out by
 // default; the terminal must not depend on a host ssh_config entry for them.
 func TestResolveLaunchCommandSSHAddsLegacyAlgorithms(t *testing.T) {
-	command, err := resolveLaunchCommand(models.TerminalProtocolSSH, CreateSessionOptions{
+	command, err := resolveLaunchCommand(models.TerminalProtocolSSH, "sid-1", CreateSessionOptions{
 		ContainerIP:   "172.20.15.2/24",
 		ContainerKind: "cisco_iol",
 	})
@@ -195,7 +197,7 @@ func TestResolveLaunchCommandConsoleExecsAttach(t *testing.T) {
 		models.TerminalProtocolConsole:        "console",
 		models.TerminalProtocolConsoleControl: "control",
 	} {
-		got, err := resolveLaunchCommand(protocol, opts)
+		got, err := resolveLaunchCommand(protocol, "sid-1", opts)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -228,7 +230,7 @@ func TestRawPTYPassesBytesUntouched(t *testing.T) {
 }
 
 func TestResolveLaunchCommandConsoleOnlyForIOL(t *testing.T) {
-	_, err := resolveLaunchCommand(models.TerminalProtocolConsole, CreateSessionOptions{ContainerID: "cid", ContainerKind: "linux"})
+	_, err := resolveLaunchCommand(models.TerminalProtocolConsole, "sid-1", CreateSessionOptions{ContainerID: "cid", ContainerKind: "linux"})
 	// writeTerminalManagerError maps this text to 400, not 500.
 	if err == nil || !strings.Contains(err.Error(), "unsupported terminal protocol") {
 		t.Fatalf("console on a linux node must be refused as an unsupported protocol, got %v", err)
@@ -264,5 +266,39 @@ func TestCountSessionsForUserIgnoresConsoleControl(t *testing.T) {
 	m.sessions["con1"] = &Session{username: "grader", state: "ready", protocol: models.TerminalProtocolConsole}
 	if err := m.reserveUserSessionCapacity("grader"); err != ErrTooManySessions {
 		t.Fatalf("a student console session must fill the cap, got %v", err)
+	}
+}
+
+// NTG-256: docker never closes a -t exec's stdin when its client dies, so the shell inside
+// would outlive the session; the marker env lets waitForProcess hang it up.
+func TestKillSessionProcessesHangsUpMarked(t *testing.T) {
+	start := func(sid string) *exec.Cmd {
+		cmd := exec.Command("sleep", "30")
+		cmd.Env = append(os.Environ(), "NG_TERM_SESSION="+sid)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return cmd
+	}
+	// sid-10 contains sid-1: the marker must match the whole value, not a prefix.
+	marked, other := start("sid-1"), start("sid-10")
+	exited, otherExited := make(chan struct{}), make(chan struct{})
+	go func() { _ = marked.Wait(); close(exited) }()
+	go func() { _ = other.Wait(); close(otherExited) }()
+	t.Cleanup(func() { _ = marked.Process.Kill(); <-exited })
+	t.Cleanup(func() { _ = other.Process.Kill(); <-otherExited })
+
+	killSessionProcesses("sid-1")
+
+	select {
+	case <-exited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("process marked sid-1 still running 2 s after killSessionProcesses")
+	}
+	// Signal(0) would succeed on an unreaped zombie, so watch Wait instead.
+	select {
+	case <-otherExited:
+		t.Fatal("process marked sid-10 was hung up by killSessionProcesses(\"sid-1\")")
+	case <-time.After(200 * time.Millisecond):
 	}
 }
