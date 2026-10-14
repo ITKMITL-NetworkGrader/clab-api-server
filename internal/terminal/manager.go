@@ -498,9 +498,6 @@ func (s *Session) waitForProcess() {
 	defer close(s.doneCh)
 
 	err := s.cmd.Wait()
-	if s.protocol == models.TerminalProtocolShell || s.protocol == models.TerminalProtocolTelnet {
-		killSessionProcesses(s.id)
-	}
 	exitCode := 0
 	if err != nil {
 		var exitErr *exec.ExitError
@@ -529,6 +526,12 @@ func (s *Session) waitForProcess() {
 
 	if file != nil {
 		_ = file.Close()
+	}
+
+	// After the state is closed: reading a D-state process's environ can block, and the
+	// session must not sit in the user's cap meanwhile.
+	if s.protocol == models.TerminalProtocolShell || s.protocol == models.TerminalProtocolTelnet {
+		killSessionProcesses(s.id)
 	}
 
 	log.Infof(
@@ -724,7 +727,10 @@ const sessionEnvKey = "NG_TERM_SESSION"
 // docker only closes an exec's stdin on client disconnect without a tty, so a -t shell never
 // gets EOF (NTG-256); children such as ping inherit the marker env and get hung up too.
 // ponytail: works because the API server runs on the host as root and sees container processes
-// in the host /proc; inside a container it silently does nothing. nohup'd processes survive, like with ssh.
+// in the host /proc; inside a container it silently does nothing. Accepted limits: SIGHUP only, so
+// nohup'd, trapped, or `env -u`'d processes survive (like with ssh); a session terminated right at
+// creation can miss an exec that has not started yet; a pid can be reused between the read and the
+// kill (upgrade path: pidfd_open + pidfd_send_signal).
 func killSessionProcesses(sessionID string) {
 	marker := []byte("\x00" + sessionEnvKey + "=" + sessionID + "\x00")
 	environs, _ := filepath.Glob("/proc/[0-9]*/environ")

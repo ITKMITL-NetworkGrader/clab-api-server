@@ -5,7 +5,6 @@ import (
 	"os/exec"
 	"reflect"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -279,12 +278,15 @@ func TestKillSessionProcessesHangsUpMarked(t *testing.T) {
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 		return cmd
 	}
-	marked, other := start("sid-1"), start("sid-2")
-	exited := make(chan struct{})
+	// sid-10 contains sid-1: the marker must match the whole value, not a prefix.
+	marked, other := start("sid-1"), start("sid-10")
+	exited, otherExited := make(chan struct{}), make(chan struct{})
 	go func() { _ = marked.Wait(); close(exited) }()
+	go func() { _ = other.Wait(); close(otherExited) }()
+	t.Cleanup(func() { _ = marked.Process.Kill(); <-exited })
+	t.Cleanup(func() { _ = other.Process.Kill(); <-otherExited })
 
 	killSessionProcesses("sid-1")
 
@@ -293,7 +295,10 @@ func TestKillSessionProcessesHangsUpMarked(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("process marked sid-1 still running 2 s after killSessionProcesses")
 	}
-	if err := other.Process.Signal(syscall.Signal(0)); err != nil {
-		t.Fatalf("process marked sid-2 must survive, got %v", err)
+	// Signal(0) would succeed on an unreaped zombie, so watch Wait instead.
+	select {
+	case <-otherExited:
+		t.Fatal("process marked sid-10 was hung up by killSessionProcesses(\"sid-1\")")
+	case <-time.After(200 * time.Millisecond):
 	}
 }
