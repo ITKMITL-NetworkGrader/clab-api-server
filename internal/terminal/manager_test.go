@@ -302,3 +302,43 @@ func TestKillSessionProcessesHangsUpMarked(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+// NTG-260: CreateSession must put the pty in raw mode for console protocols only; a shell
+// keeps its line discipline (echo, Ctrl-C).
+func TestCreateSessionRawPTYOnlyForConsole(t *testing.T) {
+	runtime := t.TempDir() + "/runtime"
+	if err := os.WriteFile(runtime, []byte("#!/bin/sh\nexec sleep 5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		protocol models.TerminalProtocol
+		raw      bool
+	}{
+		{models.TerminalProtocolConsole, true},
+		{models.TerminalProtocolConsoleControl, true},
+		{models.TerminalProtocolShell, false},
+	} {
+		m := newTestManager(t, 5)
+		info, err := m.CreateSession(CreateSessionOptions{
+			Protocol: tc.protocol, Username: "u", LabName: "l", NodeName: "n",
+			ContainerID: "cid", ContainerKind: "cisco_iol", Runtime: runtime,
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", tc.protocol, err)
+		}
+		s, err := m.lookupSession(info.SessionID, "u", true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tio, err := unix.IoctlGetTermios(int(s.ptyFile.Fd()), unix.TCGETS)
+		s.Terminate("test")
+		_ = s.WaitForExit(5 * time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cooked := tio.Lflag&(unix.ICANON|unix.ECHO|unix.ISIG) != 0
+		if cooked == tc.raw {
+			t.Errorf("%s: lflag=%#x, want raw=%v", tc.protocol, tio.Lflag, tc.raw)
+		}
+	}
+}

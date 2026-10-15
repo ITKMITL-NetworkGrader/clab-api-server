@@ -1069,11 +1069,15 @@ definitions:
     - ssh
     - shell
     - telnet
+    - console
+    - console-control
     type: string
     x-enum-varnames:
     - TerminalProtocolSSH
     - TerminalProtocolShell
     - TerminalProtocolTelnet
+    - TerminalProtocolConsole
+    - TerminalProtocolConsoleControl
   models.TerminalSessionInfo:
     properties:
       createdAt:
@@ -1107,7 +1111,8 @@ definitions:
       protocol:
         allOf:
         - $ref: '#/definitions/models.TerminalProtocol'
-        description: 'Protocol selects the terminal transport: ssh, shell, or telnet.'
+        description: 'Protocol selects the terminal transport: ssh, shell, telnet,
+          console, or console-control.'
       rows:
         description: Rows is the requested terminal height in characters.
         type: integer
@@ -2931,7 +2936,7 @@ paths:
       consumes:
       - application/json
       description: |-
-        Creates a constrained interactive terminal session for an owned lab node using one of the supported protocols: `ssh`, `shell`, or `telnet`.
+        Creates a constrained interactive terminal session for an owned lab node using one of the supported protocols: `ssh`, `shell`, `telnet`, `console` (Cisco IOL out-of-band console), or `console-control` (the grader's console write lock).
 
         **Protocol behavior**
         - `ssh`: launches the server-side `ssh` client in a PTY directly to the node management IP and streams that terminal over WebSocket.
