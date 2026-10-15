@@ -51,7 +51,7 @@ func ShutdownTerminalManager() {
 
 // RequestTerminalSessionHandler creates a constrained interactive terminal session for an owned node.
 // @Summary Create browser terminal session
-// @Description Creates a constrained interactive terminal session for an owned lab node using one of the supported protocols: `ssh`, `shell`, or `telnet`.
+// @Description Creates a constrained interactive terminal session for an owned lab node using one of the supported protocols: `ssh`, `shell`, `telnet`, `console` (Cisco IOL out-of-band console), or `console-control` (the grader's console write lock).
 // @Description
 // @Description **Protocol behavior**
 // @Description - `ssh`: launches the server-side `ssh` client in a PTY directly to the node management IP and streams that terminal over WebSocket.
