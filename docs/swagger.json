@@ -2994,7 +2994,7 @@
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a constrained interactive terminal session for an owned lab node using one of the supported protocols: `ssh`, `shell`, or `telnet`.\n\n**Protocol behavior**\n- `ssh`: launches the server-side `ssh` client in a PTY directly to the node management IP and streams that terminal over WebSocket.\n- `shell`: launches a PTY-backed `docker|podman exec -it \u003ccontainer\u003e \u003cserver-selected-command\u003e` session. Processes it starts in the container are hung up (SIGHUP) when the session ends.\n- `telnet`: launches a PTY-backed `docker|podman exec -it \u003ccontainer\u003e telnet 127.0.0.1 \u003cport\u003e` session. Processes it starts in the container are hung up (SIGHUP) when the session ends.\n\n**Security notes**\n- The backend chooses the launch command for every protocol. Clients choose only the protocol and terminal size.\n- Access is limited to owned nodes unless the caller is a configured superuser.\n\n**Relationship to `/api/v1/labs/{labName}/nodes/{nodeName}/ssh`**\n- This endpoint creates the interactive browser terminal session.\n- The separate `/ssh` endpoint returns temporary SSH access details for an external SSH client and is not required for browser terminals.",
+                "description": "Creates a constrained interactive terminal session for an owned lab node using one of the supported protocols: `ssh`, `shell`, `telnet`, `console` (Cisco IOL out-of-band console), or `console-control` (the grader's console write lock).\n\n**Protocol behavior**\n- `ssh`: launches the server-side `ssh` client in a PTY directly to the node management IP and streams that terminal over WebSocket.\n- `shell`: launches a PTY-backed `docker|podman exec -it \u003ccontainer\u003e \u003cserver-selected-command\u003e` session. Processes it starts in the container are hung up (SIGHUP) when the session ends.\n- `telnet`: launches a PTY-backed `docker|podman exec -it \u003ccontainer\u003e telnet 127.0.0.1 \u003cport\u003e` session. Processes it starts in the container are hung up (SIGHUP) when the session ends.\n\n**Security notes**\n- The backend chooses the launch command for every protocol. Clients choose only the protocol and terminal size.\n- Access is limited to owned nodes unless the caller is a configured superuser.\n\n**Relationship to `/api/v1/labs/{labName}/nodes/{nodeName}/ssh`**\n- This endpoint creates the interactive browser terminal session.\n- The separate `/ssh` endpoint returns temporary SSH access details for an external SSH client and is not required for browser terminals.",
                 "consumes": [
                     "application/json"
                 ],
@@ -7686,12 +7686,16 @@
             "enum": [
                 "ssh",
                 "shell",
-                "telnet"
+                "telnet",
+                "console",
+                "console-control"
             ],
             "x-enum-varnames": [
                 "TerminalProtocolSSH",
                 "TerminalProtocolShell",
-                "TerminalProtocolTelnet"
+                "TerminalProtocolTelnet",
+                "TerminalProtocolConsole",
+                "TerminalProtocolConsoleControl"
             ]
         },
         "models.TerminalSessionInfo": {
@@ -7743,7 +7747,7 @@
                     "type": "integer"
                 },
                 "protocol": {
-                    "description": "Protocol selects the terminal transport: ssh, shell, or telnet.",
+                    "description": "Protocol selects the terminal transport: ssh, shell, telnet, console, or console-control.",
                     "allOf": [
                         {
                             "$ref": "#/definitions/models.TerminalProtocol"
