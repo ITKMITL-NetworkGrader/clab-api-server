@@ -277,4 +277,4 @@ require (
 	tags.cncf.io/container-device-interface v1.1.0 // indirect
 )
 
-replace github.com/srl-labs/containerlab => github.com/ITKMITL-NetworkGrader/containerlab v0.78.1-0.20261029055259-0be3ca689e25
+replace github.com/srl-labs/containerlab => github.com/ITKMITL-NetworkGrader/containerlab v0.78.1-0.20261029103410-7e9e04750dcc
