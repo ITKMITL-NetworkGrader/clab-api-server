@@ -476,7 +476,8 @@ func (s *Session) waitForProcess() {
 	if s.exitCode == nil {
 		s.exitCode = &exitCode
 	}
-	if err != nil && !errors.Is(err, os.ErrClosed) {
+	// A session being terminated keeps the reason Terminate recorded.
+	if err != nil && !errors.Is(err, os.ErrClosed) && s.state != "closing" {
 		s.lastError = err.Error()
 	}
 	s.state = "closed"

@@ -33,25 +33,23 @@ type backend interface {
 }
 
 func startBackend(protocol models.TerminalProtocol, command []string, opts CreateSessionOptions, cols, rows int) (backend, error) {
-	if args, ok := dockerAPIExec(protocol, command, opts); ok {
+	if args, ok := dockerAPIExec(protocol, opts); ok {
 		return startDockerExec(opts.ContainerID, args)
 	}
 	return startPTY(protocol, command, cols, rows)
 }
 
 // dockerAPIExec: console and console-control on Docker go through the Engine API; returns the command
-// to run inside the container (what follows the container ID in the CLI argv).
-func dockerAPIExec(protocol models.TerminalProtocol, command []string, opts CreateSessionOptions) ([]string, bool) {
-	if protocol != models.TerminalProtocolConsole && protocol != models.TerminalProtocolConsoleControl {
-		return nil, false
-	}
+// to run inside the container (the same one the CLI path execs, see resolveLaunchCommand).
+func dockerAPIExec(protocol models.TerminalProtocol, opts CreateSessionOptions) ([]string, bool) {
 	if resolveRuntime(opts.Runtime) != "docker" {
 		return nil, false
 	}
-	for i, arg := range command {
-		if arg == opts.ContainerID && i+1 < len(command) {
-			return command[i+1:], true
-		}
+	switch protocol {
+	case models.TerminalProtocolConsole:
+		return []string{"/console-attach", "console"}, true
+	case models.TerminalProtocolConsoleControl:
+		return []string{"/console-attach", "control"}, true
 	}
 	return nil, false
 }
@@ -154,15 +152,19 @@ func startDockerExec(containerID string, cmd []string) (*dockerExecBackend, erro
 	if err != nil {
 		return nil, fmt.Errorf("exec attach: %w", err)
 	}
+	return newDockerExecBackend(cli, created.ID, conn), nil
+}
+
+func newDockerExecBackend(cli *dockerclient.Client, execID string, conn types.HijackedResponse) *dockerExecBackend {
 	pr, pw := io.Pipe()
-	b := &dockerExecBackend{cli: cli, execID: created.ID, conn: conn, out: pr, done: make(chan struct{})}
+	b := &dockerExecBackend{cli: cli, execID: execID, conn: conn, out: pr, done: make(chan struct{})}
 	go func() {
 		// No tty: stdout and stderr arrive multiplexed; the terminal shows both, like the CLI did.
 		_, copyErr := stdcopy.StdCopy(pw, pw, conn.Reader)
 		_ = pw.CloseWithError(copyErr)
 		close(b.done)
 	}()
-	return b, nil
+	return b
 }
 
 func (b *dockerExecBackend) Read(p []byte) (int, error)  { return b.out.Read(p) }
@@ -171,12 +173,21 @@ func (b *dockerExecBackend) Write(p []byte) (int, error) { return b.conn.Conn.Wr
 // Resize: the exec has no tty, as with `exec -i`, so there is nothing to size.
 func (b *dockerExecBackend) Resize(int, int) error { return nil }
 
-func (b *dockerExecBackend) Hangup() { b.once.Do(b.conn.Close) }
-func (b *dockerExecBackend) Kill()   { b.once.Do(b.conn.Close) }
+// shut closes the connection (the exec gets stdin EOF) and the output pipe: a frame nobody reads
+// would otherwise keep the copy goroutine blocked in the pipe write, and Wait with it.
+func (b *dockerExecBackend) shut() {
+	b.once.Do(func() {
+		b.conn.Close()
+		_ = b.out.Close()
+	})
+}
+
+func (b *dockerExecBackend) Hangup() { b.shut() }
+func (b *dockerExecBackend) Kill()   { b.shut() }
 
 func (b *dockerExecBackend) Wait() (int, error) {
 	<-b.done
-	b.once.Do(b.conn.Close)
+	b.shut()
 	// The exec ends right after its streams close; give the daemon a moment to record the exit code.
 	for i := 0; i < 20; i++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

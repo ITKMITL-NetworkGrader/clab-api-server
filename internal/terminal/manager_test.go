@@ -1,6 +1,10 @@
 package terminal
 
 import (
+	"bufio"
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/pkg/stdcopy"
+	"net"
 	"os"
 	"os/exec"
 	"reflect"
@@ -357,14 +361,38 @@ func TestDockerAPIExecOnlyForDockerConsoles(t *testing.T) {
 		{models.TerminalProtocolShell, "docker", nil},
 		{models.TerminalProtocolTelnet, "docker", nil},
 	} {
-		opts := CreateSessionOptions{ContainerID: "cid", ContainerKind: "cisco_iol", Runtime: tc.runtime, ContainerIP: "172.20.0.2"}
-		command, err := resolveLaunchCommand(tc.protocol, "sid", opts)
-		if err != nil {
-			t.Fatalf("%s/%s: %v", tc.protocol, tc.runtime, err)
-		}
-		got, ok := dockerAPIExec(tc.protocol, command, opts)
+		opts := CreateSessionOptions{ContainerID: "cid", ContainerKind: "cisco_iol", Runtime: tc.runtime}
+		got, ok := dockerAPIExec(tc.protocol, opts)
 		if ok != (tc.want != nil) || strings.Join(got, " ") != strings.Join(tc.want, " ") {
 			t.Errorf("%s/%q: got %v %v, want %v", tc.protocol, tc.runtime, got, ok, tc.want)
 		}
+	}
+	// The API path must run what the CLI path execs.
+	cli, _ := resolveLaunchCommand(models.TerminalProtocolConsole, "sid", CreateSessionOptions{ContainerID: "cid", ContainerKind: "cisco_iol"})
+	api, _ := dockerAPIExec(models.TerminalProtocolConsole, CreateSessionOptions{})
+	if strings.Join(cli[len(cli)-2:], " ") != strings.Join(api, " ") {
+		t.Errorf("CLI execs %v, API execs %v", cli, api)
+	}
+}
+
+// NTG-445 review: output nobody reads (a client that disconnected mid-burst) must not keep the
+// copy goroutine, and so Wait and the session's cap slot, alive after Hangup.
+func TestDockerExecHangupWithUnreadOutputFinishes(t *testing.T) {
+	server, client := net.Pipe()
+	go func() {
+		w := stdcopy.NewStdWriter(server, stdcopy.Stdout)
+		_, _ = w.Write([]byte("first frame nobody reads\r\n"))
+		_, _ = w.Write([]byte("second frame\r\n"))
+	}()
+	b := newDockerExecBackend(nil, "exec", types.HijackedResponse{Conn: client, Reader: bufio.NewReader(client)})
+	time.Sleep(100 * time.Millisecond)
+	b.Hangup()
+	select {
+	case <-b.done:
+	case <-time.After(time.Second):
+		t.Fatal("copy goroutine still blocked after Hangup")
+	}
+	if _, err := b.Read(make([]byte, 16)); err == nil {
+		t.Error("Read after Hangup returned no error")
 	}
 }
