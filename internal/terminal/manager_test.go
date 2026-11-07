@@ -1,6 +1,10 @@
 package terminal
 
 import (
+	"bufio"
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/pkg/stdcopy"
+	"net"
 	"os"
 	"os/exec"
 	"reflect"
@@ -330,7 +334,7 @@ func TestCreateSessionRawPTYOnlyForConsole(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tio, err := unix.IoctlGetTermios(int(s.ptyFile.Fd()), unix.TCGETS)
+		tio, err := unix.IoctlGetTermios(int(s.term.(*ptyBackend).f.Fd()), unix.TCGETS)
 		s.Terminate("test")
 		_ = s.WaitForExit(5 * time.Second)
 		if err != nil {
@@ -340,5 +344,55 @@ func TestCreateSessionRawPTYOnlyForConsole(t *testing.T) {
 		if cooked == tc.raw {
 			t.Errorf("%s: lflag=%#x, want raw=%v", tc.protocol, tio.Lflag, tc.raw)
 		}
+	}
+}
+
+// NTG-445: console sessions on Docker skip the per-console `docker exec` CLI child and run the same
+// exec through the Engine API; everything else (and other runtimes) keeps the process + pty path.
+func TestDockerAPIExecOnlyForDockerConsoles(t *testing.T) {
+	for _, tc := range []struct {
+		protocol models.TerminalProtocol
+		runtime  string
+		want     []string
+	}{
+		{models.TerminalProtocolConsole, "docker", []string{"/console-attach", "console"}},
+		{models.TerminalProtocolConsoleControl, "", []string{"/console-attach", "control"}},
+		{models.TerminalProtocolConsole, "podman", nil},
+		{models.TerminalProtocolShell, "docker", nil},
+		{models.TerminalProtocolTelnet, "docker", nil},
+	} {
+		opts := CreateSessionOptions{ContainerID: "cid", ContainerKind: "cisco_iol", Runtime: tc.runtime}
+		got, ok := dockerAPIExec(tc.protocol, opts)
+		if ok != (tc.want != nil) || strings.Join(got, " ") != strings.Join(tc.want, " ") {
+			t.Errorf("%s/%q: got %v %v, want %v", tc.protocol, tc.runtime, got, ok, tc.want)
+		}
+	}
+	// The API path must run what the CLI path execs.
+	cli, _ := resolveLaunchCommand(models.TerminalProtocolConsole, "sid", CreateSessionOptions{ContainerID: "cid", ContainerKind: "cisco_iol"})
+	api, _ := dockerAPIExec(models.TerminalProtocolConsole, CreateSessionOptions{})
+	if strings.Join(cli[len(cli)-2:], " ") != strings.Join(api, " ") {
+		t.Errorf("CLI execs %v, API execs %v", cli, api)
+	}
+}
+
+// NTG-445 review: output nobody reads (a client that disconnected mid-burst) must not keep the
+// copy goroutine, and so Wait and the session's cap slot, alive after Hangup.
+func TestDockerExecHangupWithUnreadOutputFinishes(t *testing.T) {
+	server, client := net.Pipe()
+	go func() {
+		w := stdcopy.NewStdWriter(server, stdcopy.Stdout)
+		_, _ = w.Write([]byte("first frame nobody reads\r\n"))
+		_, _ = w.Write([]byte("second frame\r\n"))
+	}()
+	b := newDockerExecBackend(nil, "exec", types.HijackedResponse{Conn: client, Reader: bufio.NewReader(client)})
+	time.Sleep(100 * time.Millisecond)
+	b.Hangup()
+	select {
+	case <-b.done:
+	case <-time.After(time.Second):
+		t.Fatal("copy goroutine still blocked after Hangup")
+	}
+	if _, err := b.Read(make([]byte, 16)); err == nil {
+		t.Error("Read after Hangup returned no error")
 	}
 }
