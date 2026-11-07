@@ -796,7 +796,9 @@ func (s *Service) Destroy(ctx context.Context, opts DestroyOptions) error {
 	)
 
 	// Destroy the lab
-	if err := clab.Destroy(ctx, destroyOpts...); err != nil {
+	if err := retryDumpInterrupted(ctx, destroyDumpAttempts, destroyDumpWait, func() error {
+		return clab.Destroy(ctx, destroyOpts...)
+	}); err != nil {
 		return fmt.Errorf("destroy failed: %w", err)
 	}
 
