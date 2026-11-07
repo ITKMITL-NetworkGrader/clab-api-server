@@ -2,7 +2,6 @@ package terminal
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -19,7 +18,6 @@ import (
 	"time"
 
 	"github.com/charmbracelet/log"
-	"github.com/creack/pty"
 	"golang.org/x/term"
 
 	"github.com/srl-labs/clab-api-server/internal/models"
@@ -102,9 +100,8 @@ type Session struct {
 	exitCode     *int
 	attached     bool
 
-	cmd     *exec.Cmd
-	ptyFile *os.File
-	doneCh  chan struct{}
+	term   backend
+	doneCh chan struct{}
 }
 
 func NewManager(cleanupTick, sessionTTL, idleTimeout time.Duration, maxPerUser int) *Manager {
@@ -204,35 +201,14 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 		doneCh:       make(chan struct{}),
 	}
 
-	cmd := exec.CommandContext(context.Background(), command[0], command[1:]...)
-	cmd.Env = minimalCommandEnv()
-	cmd.Dir = "/"
-
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{
-		Cols: uint16(cols),
-		Rows: uint16(rows),
-	})
+	term, err := startBackend(protocol, command, opts, cols, rows)
 	if err != nil {
 		if counted {
 			m.releaseUserSessionCapacity(username)
 		}
 		return nil, fmt.Errorf("failed to start terminal session: %w", err)
 	}
-
-	if protocol == models.TerminalProtocolConsole || protocol == models.TerminalProtocolConsoleControl {
-		if err := rawPTY(ptmx); err != nil {
-			_ = cmd.Process.Kill()
-			_ = ptmx.Close()
-			_ = cmd.Wait()
-			if counted {
-				m.releaseUserSessionCapacity(username)
-			}
-			return nil, fmt.Errorf("failed to start terminal session: %w", err)
-		}
-	}
-
-	session.cmd = cmd
-	session.ptyFile = ptmx
+	session.term = term
 
 	m.mu.Lock()
 	if counted {
@@ -430,13 +406,10 @@ func (s *Session) EndStream() {
 }
 
 func (s *Session) Read(p []byte) (int, error) {
-	s.mu.RLock()
-	file := s.ptyFile
-	s.mu.RUnlock()
-	if file == nil {
+	if s.isClosed() {
 		return 0, io.EOF
 	}
-	n, err := file.Read(p)
+	n, err := s.term.Read(p)
 	if n > 0 {
 		s.markActivity()
 	}
@@ -444,30 +417,26 @@ func (s *Session) Read(p []byte) (int, error) {
 }
 
 func (s *Session) WriteInput(input string) error {
-	s.mu.RLock()
-	file := s.ptyFile
-	s.mu.RUnlock()
-	if file == nil {
+	if s.isClosed() {
 		return io.EOF
 	}
 	s.markActivity()
-	_, err := file.WriteString(input)
+	_, err := s.term.Write([]byte(input))
 	return err
 }
 
 func (s *Session) Resize(cols, rows int) error {
-	s.mu.RLock()
-	file := s.ptyFile
-	s.mu.RUnlock()
-	if file == nil {
+	if s.isClosed() {
 		return io.EOF
 	}
 	s.markActivity()
-	sanitizedCols, sanitizedRows := sanitizeTerminalSize(cols, rows)
-	return pty.Setsize(file, &pty.Winsize{
-		Cols: uint16(sanitizedCols),
-		Rows: uint16(sanitizedRows),
-	})
+	return s.term.Resize(sanitizeTerminalSize(cols, rows))
+}
+
+func (s *Session) isClosed() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state == "closed"
 }
 
 func (s *Session) markActivity() {
@@ -497,17 +466,10 @@ func (s *Session) Snapshot() models.TerminalSessionInfo {
 func (s *Session) waitForProcess() {
 	defer close(s.doneCh)
 
-	err := s.cmd.Wait()
-	exitCode := 0
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			exitCode = exitErr.ExitCode()
-		} else {
-			exitCode = -1
-		}
-	} else if s.cmd.ProcessState != nil {
-		exitCode = s.cmd.ProcessState.ExitCode()
+	exitCode, err := s.term.Wait()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		err = nil // a non-zero exit is reported through exitCode, as before
 	}
 
 	s.mu.Lock()
@@ -520,13 +482,7 @@ func (s *Session) waitForProcess() {
 	s.state = "closed"
 	s.attached = false
 	s.lastActivity = time.Now().UTC()
-	file := s.ptyFile
-	s.ptyFile = nil
 	s.mu.Unlock()
-
-	if file != nil {
-		_ = file.Close()
-	}
 
 	// After the state is closed: reading a D-state process's environ can block, and the
 	// session must not sit in the user's cap meanwhile.
@@ -563,19 +519,11 @@ func (s *Session) Terminate(reason string) {
 	s.state = "closing"
 	s.lastError = reason
 	s.lastActivity = time.Now().UTC()
-	file := s.ptyFile
-	proc := s.cmd.Process
+	term := s.term
 	s.mu.Unlock()
 
-	if file != nil {
-		_ = file.Close()
-	}
-	if proc != nil {
-		_ = proc.Signal(syscall.SIGHUP)
-		time.AfterFunc(750*time.Millisecond, func() {
-			_ = proc.Kill()
-		})
-	}
+	term.Hangup()
+	time.AfterFunc(750*time.Millisecond, term.Kill)
 }
 
 func sanitizeTerminalSize(cols, rows int) (int, int) {

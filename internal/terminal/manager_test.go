@@ -330,7 +330,7 @@ func TestCreateSessionRawPTYOnlyForConsole(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tio, err := unix.IoctlGetTermios(int(s.ptyFile.Fd()), unix.TCGETS)
+		tio, err := unix.IoctlGetTermios(int(s.term.(*ptyBackend).f.Fd()), unix.TCGETS)
 		s.Terminate("test")
 		_ = s.WaitForExit(5 * time.Second)
 		if err != nil {
@@ -339,6 +339,32 @@ func TestCreateSessionRawPTYOnlyForConsole(t *testing.T) {
 		cooked := tio.Lflag&(unix.ICANON|unix.ECHO|unix.ISIG) != 0
 		if cooked == tc.raw {
 			t.Errorf("%s: lflag=%#x, want raw=%v", tc.protocol, tio.Lflag, tc.raw)
+		}
+	}
+}
+
+// NTG-445: console sessions on Docker skip the per-console `docker exec` CLI child and run the same
+// exec through the Engine API; everything else (and other runtimes) keeps the process + pty path.
+func TestDockerAPIExecOnlyForDockerConsoles(t *testing.T) {
+	for _, tc := range []struct {
+		protocol models.TerminalProtocol
+		runtime  string
+		want     []string
+	}{
+		{models.TerminalProtocolConsole, "docker", []string{"/console-attach", "console"}},
+		{models.TerminalProtocolConsoleControl, "", []string{"/console-attach", "control"}},
+		{models.TerminalProtocolConsole, "podman", nil},
+		{models.TerminalProtocolShell, "docker", nil},
+		{models.TerminalProtocolTelnet, "docker", nil},
+	} {
+		opts := CreateSessionOptions{ContainerID: "cid", ContainerKind: "cisco_iol", Runtime: tc.runtime, ContainerIP: "172.20.0.2"}
+		command, err := resolveLaunchCommand(tc.protocol, "sid", opts)
+		if err != nil {
+			t.Fatalf("%s/%s: %v", tc.protocol, tc.runtime, err)
+		}
+		got, ok := dockerAPIExec(tc.protocol, command, opts)
+		if ok != (tc.want != nil) || strings.Join(got, " ") != strings.Join(tc.want, " ") {
+			t.Errorf("%s/%q: got %v %v, want %v", tc.protocol, tc.runtime, got, ok, tc.want)
 		}
 	}
 }
