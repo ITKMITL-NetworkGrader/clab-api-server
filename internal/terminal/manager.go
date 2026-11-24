@@ -31,6 +31,11 @@ const (
 	DefaultTerminalCols       = 120
 	DefaultTerminalRows       = 36
 	DefaultTelnetPort         = 5000
+
+	// NTG-505: a resumable session lives on this long after its client dropped, and keeps this much output
+	// to replay to the next client.
+	ParkTimeout = 10 * time.Minute
+	RingBytes   = 64 * 1024
 )
 
 var (
@@ -39,6 +44,8 @@ var (
 	ErrSessionAttached   = errors.New("terminal session already has an active client")
 	ErrTooManySessions   = errors.New("too many terminal sessions for user")
 	ErrSessionExited     = errors.New("terminal session has already exited")
+	ErrTakenOver         = errors.New("terminal session taken over by another client")
+	ErrDetached          = errors.New("terminal stream detached")
 	validSSHUsernameExpr = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]{0,31}$`)
 )
 
@@ -69,12 +76,16 @@ type CreateSessionOptions struct {
 	Rows          int
 	SSHUsername   string
 	TelnetPort    int
+	// ResumeKey (NTG-505): see models.TerminalSessionRequest. Honoured only for ssh to a linux node.
+	ResumeKey string
 }
 
 type Manager struct {
 	mu          sync.RWMutex
 	sessions    map[string]*Session
 	pending     map[string]int
+	byKey       map[string]*Session // resumable sessions, one per (user, viewer, lab, node)
+	parkTimeout time.Duration
 	cleanupTick time.Duration
 	sessionTTL  time.Duration
 	idleTimeout time.Duration
@@ -100,6 +111,18 @@ type Session struct {
 	exitCode     *int
 	attached     bool
 
+	// NTG-505, resumable sessions only. pump is the only reader of the backend; cur is the attached stream.
+	resumable   bool
+	key         string
+	containerID string
+	parkedAt    time.Time
+	ring        []byte
+	trimmed     bool
+	cur         *Stream
+	gen         int
+	pumpDone    bool
+	cols, rows  int
+
 	term   backend
 	doneCh chan struct{}
 }
@@ -121,6 +144,8 @@ func NewManager(cleanupTick, sessionTTL, idleTimeout time.Duration, maxPerUser i
 	m := &Manager{
 		sessions:    make(map[string]*Session),
 		pending:     make(map[string]int),
+		byKey:       make(map[string]*Session),
+		parkTimeout: ParkTimeout,
 		cleanupTick: cleanupTick,
 		sessionTTL:  sessionTTL,
 		idleTimeout: idleTimeout,
@@ -172,6 +197,14 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 	}
 
 	cols, rows := sanitizeTerminalSize(opts.Cols, opts.Rows)
+	resumable := opts.ResumeKey != "" && protocol == models.TerminalProtocolSSH && strings.TrimSpace(opts.ContainerKind) == "linux"
+	key := ""
+	if resumable {
+		key = strings.Join([]string{strings.TrimSpace(opts.Username), opts.ResumeKey, strings.TrimSpace(opts.LabName), strings.TrimSpace(opts.NodeName), "ssh"}, "\x00")
+		if info := m.reattach(key, opts.ContainerID); info != nil {
+			return info, nil
+		}
+	}
 	sessionID := newSessionID()
 	command, err := resolveLaunchCommand(protocol, sessionID, opts)
 	if err != nil {
@@ -199,6 +232,12 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 		lastActivity: now,
 		state:        "ready",
 		doneCh:       make(chan struct{}),
+		resumable:    resumable,
+		key:          key,
+		containerID:  opts.ContainerID,
+		parkedAt:     now,
+		cols:         cols,
+		rows:         rows,
 	}
 
 	term, err := startBackend(protocol, command, opts, cols, rows)
@@ -214,10 +253,34 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 	if counted {
 		m.releaseUserSessionCapacityLocked(session.username)
 	}
+	var stale *Session
+	if resumable {
+		// Two fresh requests at once (pop-out): the first one registered wins.
+		if holder := m.byKey[key]; holder != nil {
+			if holder.live(opts.ContainerID) {
+				m.mu.Unlock()
+				term.Hangup()
+				term.Kill()
+				go func() { _, _ = term.Wait() }()
+				if info := m.reattach(key, opts.ContainerID); info != nil {
+					return info, nil
+				}
+				return nil, ErrSessionExited
+			}
+			stale = holder
+		}
+		m.byKey[key] = session
+	}
 	m.sessions[session.id] = session
 	m.mu.Unlock()
+	if stale != nil {
+		stale.Terminate("replaced by a new session")
+	}
 
 	go session.waitForProcess()
+	if resumable {
+		go session.pump()
+	}
 
 	log.Infof(
 		"terminal session created: user=%s lab=%s node=%s protocol=%s session=%s",
@@ -230,6 +293,60 @@ func (m *Manager) CreateSession(opts CreateSessionOptions) (*models.TerminalSess
 
 	info := session.Snapshot()
 	return &info, nil
+}
+
+// live: ready, backend still producing output, and still on this container.
+func (s *Session) live(containerID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state == "ready" && !s.pumpDone && s.containerID == containerID
+}
+
+// reattach returns the running resumable session for key, or nil. A stale one (other container, not
+// ready) is terminated.
+func (m *Manager) reattach(key, containerID string) *models.TerminalSessionInfo {
+	m.mu.RLock()
+	holder := m.byKey[key]
+	m.mu.RUnlock()
+	if holder == nil {
+		return nil
+	}
+	if !holder.live(containerID) {
+		holder.Terminate("replaced by a new session")
+		return nil
+	}
+	info := holder.Snapshot()
+	info.Reattached = true
+	log.Infof("terminal session reattached: user=%s lab=%s node=%s session=%s", info.Username, info.LabName, info.NodeName, info.SessionID)
+	return &info
+}
+
+// CloseResumable ends the resumable sessions of a lab's nodes (all nodes when none are given): a stopped,
+// removed or recreated node must not keep a parked shell.
+func (m *Manager) CloseResumable(lab string, nodes ...string) {
+	var doomed []*Session
+	m.mu.RLock()
+	for _, s := range m.byKey {
+		if s.labName != lab {
+			continue
+		}
+		if len(nodes) > 0 {
+			match := false
+			for _, n := range nodes {
+				if n == s.nodeName {
+					match = true
+				}
+			}
+			if !match {
+				continue
+			}
+		}
+		doomed = append(doomed, s)
+	}
+	m.mu.RUnlock()
+	for _, s := range doomed {
+		s.Terminate("node or lab stopped")
+	}
 }
 
 // rawPTY: `exec -i` leaves the host pty cooked (the runtime CLI only sets raw mode for -t), which would
@@ -287,15 +404,16 @@ func (m *Manager) TerminateSession(sessionID, username string, allowAll bool) er
 	return nil
 }
 
-func (m *Manager) BeginStream(sessionID, username string, allowAll bool) (*Session, error) {
+func (m *Manager) BeginStream(sessionID, username string, allowAll bool) (*Session, *Stream, error) {
 	session, err := m.lookupSession(sessionID, username, allowAll)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if err := session.beginStream(); err != nil {
-		return nil, err
+	stream, err := session.beginStream()
+	if err != nil {
+		return nil, nil, err
 	}
-	return session, nil
+	return session, stream, nil
 }
 
 func (m *Manager) lookupSession(sessionID, username string, allowAll bool) (*Session, error) {
@@ -362,13 +480,21 @@ func (m *Manager) cleanupExpiredSessions() {
 		attached := session.attached
 		expiresAt := session.expiresAt
 		lastActivity := session.lastActivity
+		resumable := session.resumable
+		parkedAt := session.parkedAt
 		session.mu.RUnlock()
 
 		if now.After(expiresAt) {
 			session.Terminate("session TTL expired")
 			continue
 		}
-		if !attached && state == "ready" && now.Sub(lastActivity) > m.idleTimeout {
+		if resumable {
+			if state == "ready" && !attached && now.Sub(parkedAt) > m.parkTimeout {
+				session.terminate("parked session expired", func() bool {
+					return session.cur == nil && session.parkedAt.Equal(parkedAt)
+				})
+			}
+		} else if !attached && state == "ready" && now.Sub(lastActivity) > m.idleTimeout {
 			session.Terminate("session idle timeout")
 			continue
 		}
@@ -382,27 +508,137 @@ func (m *Manager) cleanupExpiredSessions() {
 	}
 }
 
-func (s *Session) beginStream() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.state == "closed" {
-		return ErrSessionExited
-	}
-	if s.attached {
-		return ErrSessionAttached
-	}
-
-	s.attached = true
-	s.lastActivity = time.Now().UTC()
-	return nil
+// Stream is one client's view of a session. A non-resumable session's stream reads the backend directly;
+// a resumable one's reads what pump forwards, so a client can leave and another take over.
+type Stream struct {
+	s          *Session
+	r          *io.PipeReader
+	w          *io.PipeWriter
+	Replay     []byte
+	Reattached bool
 }
 
-func (s *Session) EndStream() {
+func (st *Stream) Read(p []byte) (int, error) {
+	if st.r != nil {
+		return st.r.Read(p)
+	}
+	return st.s.Read(p)
+}
+
+func (s *Session) beginStream() (*Stream, error) {
+	s.mu.Lock()
+	if s.state != "ready" || s.pumpDone {
+		s.mu.Unlock()
+		return nil, ErrSessionExited
+	}
+	if !s.resumable {
+		if s.attached {
+			s.mu.Unlock()
+			return nil, ErrSessionAttached
+		}
+		s.attached = true
+		s.lastActivity = time.Now().UTC()
+		s.mu.Unlock()
+		return &Stream{s: s}, nil
+	}
+
+	prev := s.cur
+	s.gen++
+	r, w := io.Pipe()
+	replay := append([]byte(nil), s.ring...)
+	if s.trimmed {
+		if i := bytes.IndexByte(replay, '\n'); i >= 0 {
+			replay = replay[i+1:]
+		}
+	}
+	st := &Stream{s: s, r: r, w: w, Replay: replay, Reattached: s.gen > 1}
+	s.cur = st
+	s.attached = true
+	s.parkedAt = time.Time{}
+	s.lastActivity = time.Now().UTC()
+	s.mu.Unlock()
+
+	if prev != nil { // closing the writer is what reaches the reader: a closed reader would report ErrClosedPipe
+		_ = prev.w.CloseWithError(ErrTakenOver)
+	}
+	return st, nil
+}
+
+// pump is the only reader of a resumable session's backend: it keeps the ring and forwards to the
+// attached stream, if any.
+func (s *Session) pump() {
+	buf := make([]byte, 4096)
+	for {
+		n, err := s.term.Read(buf)
+		if n > 0 {
+			s.mu.Lock()
+			s.ring = append(s.ring, buf[:n]...)
+			if len(s.ring) > RingBytes {
+				s.ring = append([]byte(nil), s.ring[len(s.ring)-RingBytes:]...)
+				s.trimmed = true
+			}
+			s.lastActivity = time.Now().UTC()
+			var w *io.PipeWriter
+			if s.cur != nil {
+				w = s.cur.w
+			}
+			s.mu.Unlock()
+			if w != nil {
+				// A write error means the stream detached; the data stays in the ring.
+				_, _ = w.Write(buf[:n])
+			}
+		}
+		if err != nil {
+			s.mu.Lock()
+			s.pumpDone = true
+			if s.cur != nil {
+				_ = s.cur.w.Close()
+			}
+			s.mu.Unlock()
+			return
+		}
+	}
+}
+
+// EndStream ends the client's use of the stream (the handler's defer).
+func (s *Session) EndStream(st *Stream) {
+	if st.r != nil {
+		s.Drop(st, "stream ended")
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.attached = false
 	s.lastActivity = time.Now().UTC()
+}
+
+// Drop is a client leaving without asking to close: a non-resumable session ends, a resumable one parks.
+func (s *Session) Drop(st *Stream, reason string) {
+	if st.r == nil {
+		s.Terminate(reason)
+		return
+	}
+	_ = st.w.CloseWithError(ErrDetached)
+	s.mu.Lock()
+	if s.cur != st || s.state != "ready" {
+		s.mu.Unlock()
+		return
+	}
+	s.cur = nil
+	s.attached = false
+	s.parkedAt = time.Now().UTC()
+	s.mu.Unlock()
+	log.Infof("terminal session parked: user=%s lab=%s node=%s session=%s reason=%s", s.username, s.labName, s.nodeName, s.id, reason)
+}
+
+// Close is the client's deliberate close: only the stream that holds the session may end it.
+func (s *Session) Close(st *Stream, reason string) {
+	s.mu.RLock()
+	stale := s.resumable && s.cur != st
+	s.mu.RUnlock()
+	if !stale {
+		s.Terminate(reason)
+	}
 }
 
 func (s *Session) Read(p []byte) (int, error) {
@@ -416,21 +652,55 @@ func (s *Session) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (s *Session) WriteInput(input string) error {
+func (s *Session) isCurrent(st *Stream) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return !s.resumable || s.cur == st
+}
+
+func (s *Session) WriteInput(st *Stream, input string) error {
 	if s.isClosed() {
 		return io.EOF
+	}
+	if !s.isCurrent(st) {
+		return ErrDetached
 	}
 	s.markActivity()
 	_, err := s.term.Write([]byte(input))
 	return err
 }
 
-func (s *Session) Resize(cols, rows int) error {
+func (s *Session) Resize(st *Stream, cols, rows int) error {
 	if s.isClosed() {
 		return io.EOF
 	}
-	s.markActivity()
-	return s.term.Resize(sanitizeTerminalSize(cols, rows))
+	if !s.isCurrent(st) {
+		return ErrDetached
+	}
+	cols, rows = sanitizeTerminalSize(cols, rows)
+	s.mu.Lock()
+	s.cols, s.rows = cols, rows
+	s.lastActivity = time.Now().UTC()
+	s.mu.Unlock()
+	return s.term.Resize(cols, rows)
+}
+
+// Redraw makes a full-screen program repaint: a resize to the same size sends no SIGWINCH, so shrink by
+// one row first and restore the stored size (which a browser resize in between may have changed).
+func (s *Session) Redraw() {
+	s.mu.RLock()
+	cols, rows := s.cols, s.rows
+	s.mu.RUnlock()
+	_ = s.term.Resize(cols, rows-1)
+	time.AfterFunc(150*time.Millisecond, func() {
+		if s.isClosed() {
+			return
+		}
+		s.mu.RLock()
+		cols, rows := s.cols, s.rows
+		s.mu.RUnlock()
+		_ = s.term.Resize(cols, rows)
+	})
 }
 
 func (s *Session) isClosed() bool {
@@ -485,6 +755,14 @@ func (s *Session) waitForProcess() {
 	s.lastActivity = time.Now().UTC()
 	s.mu.Unlock()
 
+	if s.resumable {
+		s.manager.mu.Lock()
+		if s.manager.byKey[s.key] == s {
+			delete(s.manager.byKey, s.key)
+		}
+		s.manager.mu.Unlock()
+	}
+
 	// After the state is closed: reading a D-state process's environ can block, and the
 	// session must not sit in the user's cap meanwhile.
 	if s.protocol == models.TerminalProtocolShell || s.protocol == models.TerminalProtocolTelnet {
@@ -511,9 +789,12 @@ func (s *Session) WaitForExit(timeout time.Duration) error {
 	}
 }
 
-func (s *Session) Terminate(reason string) {
+func (s *Session) Terminate(reason string) { s.terminate(reason, nil) }
+
+// terminate: guard, when set, runs under s.mu and can veto (a reattach may have raced the caller).
+func (s *Session) terminate(reason string, guard func() bool) {
 	s.mu.Lock()
-	if s.state == "closed" {
+	if s.state == "closed" || (guard != nil && !guard()) {
 		s.mu.Unlock()
 		return
 	}

@@ -548,6 +548,11 @@ func DestroyLabHandler(c *gin.Context) {
 	if ownerCheckErr != nil {
 		return
 	}
+	if nodeFilter == "" {
+		closeResumableTerminals(labName)
+	} else {
+		closeResumableTerminals(labName, strings.Split(nodeFilter, ",")...)
+	}
 
 	svc := GetClabService()
 	if svc == nil {
@@ -744,6 +749,7 @@ func RedeployLabHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: "Could not determine original topology path for redeploy."})
 		return
 	}
+	closeResumableTerminals(labName)
 
 	svc := GetClabService()
 	if svc == nil {

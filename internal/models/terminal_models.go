@@ -24,6 +24,9 @@ type TerminalSessionRequest struct {
 	SSHUsername string `json:"sshUsername,omitempty"`
 	// TelnetPort optionally overrides the telnet destination port for protocol=telnet.
 	TelnetPort int `json:"telnetPort,omitempty"`
+	// ResumeKey (NTG-505) makes a Linux ssh session resumable: the same key asks for the same node's shell
+	// again after a dropped client (10 minutes). Identifies the person at the browser; 1-64 of A-Za-z0-9._@-.
+	ResumeKey string `json:"resumeKey,omitempty"`
 }
 
 type TerminalSessionResponse struct {
@@ -46,4 +49,6 @@ type TerminalSessionInfo struct {
 	LastActivity time.Time        `json:"lastActivity"`
 	ExitCode     *int             `json:"exitCode,omitempty"`
 	Error        string           `json:"error,omitempty"`
+	// Reattached is true when the request returned an already running resumable session.
+	Reattached bool `json:"reattached,omitempty"`
 }

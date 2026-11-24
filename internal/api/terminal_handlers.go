@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 )
 
 var terminalManager *termsvc.Manager
+
+var resumeKeyExpr = regexp.MustCompile(`^[A-Za-z0-9._@-]{1,64}$`)
 
 var terminalUpgrader = websocket.Upgrader{
 	CheckOrigin: func(_ *http.Request) bool { return true },
@@ -43,6 +46,13 @@ func InitTerminalManager() {
 	)
 }
 
+// closeResumableTerminals ends parked shells of nodes about to stop or be recreated (NTG-505).
+func closeResumableTerminals(labName string, nodes ...string) {
+	if terminalManager != nil {
+		terminalManager.CloseResumable(labName, nodes...)
+	}
+}
+
 func ShutdownTerminalManager() {
 	if terminalManager != nil {
 		terminalManager.Shutdown()
@@ -56,6 +66,7 @@ func ShutdownTerminalManager() {
 // @Description **Protocol behavior**
 // @Description - `ssh`: launches the server-side `ssh` client in a PTY directly to the node management IP and streams that terminal over WebSocket.
 // @Description - `shell`: launches a PTY-backed `docker|podman exec -it <container> <server-selected-command>` session. Processes it starts in the container are hung up (SIGHUP) when the session ends.
+// @Description - `ssh` with `resumeKey` on a `linux` node: the session is resumable. When the client drops without a deliberate close it stays alive for 10 minutes and the same key gets the same session back (`reattached: true`); the next stream replays the last 64 KiB of output.
 // @Description - `telnet`: launches a PTY-backed `docker|podman exec -it <container> telnet 127.0.0.1 <port>` session. Processes it starts in the container are hung up (SIGHUP) when the session ends.
 // @Description
 // @Description **Security notes**
@@ -99,6 +110,11 @@ func RequestTerminalSessionHandler(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Invalid request format: " + err.Error()})
 			return
 		}
+	}
+
+	if req.ResumeKey != "" && !resumeKeyExpr.MatchString(req.ResumeKey) {
+		c.JSON(http.StatusBadRequest, models.ErrorResponse{Error: "Invalid resumeKey format."})
+		return
 	}
 
 	if _, err := verifyLabOwnership(c, username, labName); err != nil {
@@ -154,6 +170,7 @@ func RequestTerminalSessionHandler(c *gin.Context) {
 		Rows:          req.Rows,
 		SSHUsername:   req.SSHUsername,
 		TelnetPort:    req.TelnetPort,
+		ResumeKey:     req.ResumeKey,
 	})
 	if err != nil {
 		writeTerminalManagerError(c, username, "create terminal session", err)
@@ -239,7 +256,7 @@ func TerminateTerminalSessionHandler(c *gin.Context) {
 func StreamTerminalSessionHandler(c *gin.Context) {
 	username := c.GetString("username")
 	sessionID := strings.TrimSpace(c.Param("sessionId"))
-	session, err := terminalManager.BeginStream(sessionID, username, isSuperuser(username))
+	session, stream, err := terminalManager.BeginStream(sessionID, username, isSuperuser(username))
 	if err != nil {
 		writeTerminalManagerError(c, username, "stream terminal session", err)
 		return
@@ -247,12 +264,12 @@ func StreamTerminalSessionHandler(c *gin.Context) {
 
 	conn, err := terminalUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		session.EndStream()
+		session.EndStream(stream)
 		log.Warnf("terminal websocket upgrade failed for user '%s' session '%s': %v", username, sessionID, err)
 		return
 	}
 	defer conn.Close()
-	defer session.EndStream()
+	defer session.EndStream(stream)
 
 	ready := session.Snapshot()
 	if err := conn.WriteJSON(gin.H{
@@ -262,12 +279,27 @@ func StreamTerminalSessionHandler(c *gin.Context) {
 		"createdAt": ready.CreatedAt,
 		"expiresAt": ready.ExpiresAt,
 	}); err != nil {
-		session.Terminate("client disconnected before terminal became ready")
+		session.Drop(stream, "client disconnected before terminal became ready")
 		return
+	}
+	if len(stream.Replay) > 0 {
+		if err := conn.WriteJSON(gin.H{
+			"type":     "output",
+			"data":     base64.StdEncoding.EncodeToString(stream.Replay),
+			"encoding": "base64",
+		}); err != nil {
+			session.Drop(stream, "client disconnected during replay")
+			return
+		}
+	}
+	if stream.Reattached {
+		session.Redraw()
 	}
 
 	readErrCh := make(chan error, 1)
 	go func() {
+		// Any way out of this loop but a deliberate close detaches (parks) a resumable session.
+		defer session.Drop(stream, "client disconnected")
 		for {
 			_, payload, readErr := conn.ReadMessage()
 			if readErr != nil {
@@ -283,17 +315,17 @@ func StreamTerminalSessionHandler(c *gin.Context) {
 
 			switch message.Type {
 			case "input":
-				if err := session.WriteInput(message.Data); err != nil {
+				if err := session.WriteInput(stream, message.Data); err != nil {
 					readErrCh <- err
 					return
 				}
 			case "resize":
-				if err := session.Resize(message.Cols, message.Rows); err != nil {
+				if err := session.Resize(stream, message.Cols, message.Rows); err != nil {
 					readErrCh <- err
 					return
 				}
 			case "close":
-				session.Terminate("client requested close")
+				session.Close(stream, "client requested close")
 				readErrCh <- nil
 				return
 			default:
@@ -305,14 +337,14 @@ func StreamTerminalSessionHandler(c *gin.Context) {
 
 	buffer := make([]byte, 4096)
 	for {
-		n, readErr := session.Read(buffer)
+		n, readErr := stream.Read(buffer)
 		if n > 0 {
 			if err := conn.WriteJSON(gin.H{
 				"type":     "output",
 				"data":     base64.StdEncoding.EncodeToString(buffer[:n]),
 				"encoding": "base64",
 			}); err != nil {
-				session.Terminate("client disconnected during terminal output")
+				session.Drop(stream, "client disconnected during terminal output")
 				return
 			}
 		}
@@ -322,11 +354,22 @@ func StreamTerminalSessionHandler(c *gin.Context) {
 			if clientErr != nil && !websocket.IsCloseError(clientErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				log.Debugf("terminal websocket client loop ended for session '%s': %v", sessionID, clientErr)
 			}
-			session.Terminate("client disconnected")
+			session.Drop(stream, "client disconnected")
 			return
 		default:
 		}
 
+		if errors.Is(readErr, termsvc.ErrTakenOver) {
+			_ = conn.WriteJSON(gin.H{
+				"type":     "output",
+				"data":     base64.StdEncoding.EncodeToString([]byte("\r\n[console opened in another tab]\r\n")),
+				"encoding": "base64",
+			})
+			return
+		}
+		if errors.Is(readErr, termsvc.ErrDetached) {
+			return
+		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
 				log.Debugf("terminal PTY read ended for session '%s': %v", sessionID, readErr)
