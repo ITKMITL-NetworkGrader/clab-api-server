@@ -2998,7 +2998,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Creates a constrained interactive terminal session for an owned lab node using one of the supported protocols: ` + "`" + `ssh` + "`" + `, ` + "`" + `shell` + "`" + `, ` + "`" + `telnet` + "`" + `, ` + "`" + `console` + "`" + ` (Cisco IOL out-of-band console), or ` + "`" + `console-control` + "`" + ` (the grader's console write lock).\n\n**Protocol behavior**\n- ` + "`" + `ssh` + "`" + `: launches the server-side ` + "`" + `ssh` + "`" + ` client in a PTY directly to the node management IP and streams that terminal over WebSocket.\n- ` + "`" + `shell` + "`" + `: launches a PTY-backed ` + "`" + `docker|podman exec -it \u003ccontainer\u003e \u003cserver-selected-command\u003e` + "`" + ` session. Processes it starts in the container are hung up (SIGHUP) when the session ends.\n- ` + "`" + `telnet` + "`" + `: launches a PTY-backed ` + "`" + `docker|podman exec -it \u003ccontainer\u003e telnet 127.0.0.1 \u003cport\u003e` + "`" + ` session. Processes it starts in the container are hung up (SIGHUP) when the session ends.\n\n**Security notes**\n- The backend chooses the launch command for every protocol. Clients choose only the protocol and terminal size.\n- Access is limited to owned nodes unless the caller is a configured superuser.\n\n**Relationship to ` + "`" + `/api/v1/labs/{labName}/nodes/{nodeName}/ssh` + "`" + `**\n- This endpoint creates the interactive browser terminal session.\n- The separate ` + "`" + `/ssh` + "`" + ` endpoint returns temporary SSH access details for an external SSH client and is not required for browser terminals.",
+                "description": "Creates a constrained interactive terminal session for an owned lab node using one of the supported protocols: ` + "`" + `ssh` + "`" + `, ` + "`" + `shell` + "`" + `, ` + "`" + `telnet` + "`" + `, ` + "`" + `console` + "`" + ` (Cisco IOL out-of-band console), or ` + "`" + `console-control` + "`" + ` (the grader's console write lock).\n\n**Protocol behavior**\n- ` + "`" + `ssh` + "`" + `: launches the server-side ` + "`" + `ssh` + "`" + ` client in a PTY directly to the node management IP and streams that terminal over WebSocket.\n- ` + "`" + `shell` + "`" + `: launches a PTY-backed ` + "`" + `docker|podman exec -it \u003ccontainer\u003e \u003cserver-selected-command\u003e` + "`" + ` session. Processes it starts in the container are hung up (SIGHUP) when the session ends.\n- ` + "`" + `ssh` + "`" + ` with ` + "`" + `resumeKey` + "`" + ` on a ` + "`" + `linux` + "`" + ` node: the session is resumable. When the client drops without a deliberate close it stays alive for 10 minutes and the same key gets the same session back (` + "`" + `reattached: true` + "`" + `); the next stream replays the last 64 KiB of output.\n- ` + "`" + `telnet` + "`" + `: launches a PTY-backed ` + "`" + `docker|podman exec -it \u003ccontainer\u003e telnet 127.0.0.1 \u003cport\u003e` + "`" + ` session. Processes it starts in the container are hung up (SIGHUP) when the session ends.\n\n**Security notes**\n- The backend chooses the launch command for every protocol. Clients choose only the protocol and terminal size.\n- Access is limited to owned nodes unless the caller is a configured superuser.\n\n**Relationship to ` + "`" + `/api/v1/labs/{labName}/nodes/{nodeName}/ssh` + "`" + `**\n- This endpoint creates the interactive browser terminal session.\n- The separate ` + "`" + `/ssh` + "`" + ` endpoint returns temporary SSH access details for an external SSH client and is not required for browser terminals.",
                 "consumes": [
                     "application/json"
                 ],
@@ -7729,6 +7729,10 @@ const docTemplate = `{
                 "protocol": {
                     "$ref": "#/definitions/models.TerminalProtocol"
                 },
+                "reattached": {
+                    "description": "Reattached is true when the request returned an already running resumable session.",
+                    "type": "boolean"
+                },
                 "sessionId": {
                     "type": "string"
                 },
@@ -7757,6 +7761,10 @@ const docTemplate = `{
                             "$ref": "#/definitions/models.TerminalProtocol"
                         }
                     ]
+                },
+                "resumeKey": {
+                    "description": "ResumeKey (NTG-505) makes a Linux ssh session resumable: the same key asks for the same node's shell\nagain after a dropped client (10 minutes). Identifies the person at the browser; 1-64 of A-Za-z0-9._@-.",
+                    "type": "string"
                 },
                 "rows": {
                     "description": "Rows is the requested terminal height in characters.",

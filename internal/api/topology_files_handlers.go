@@ -490,6 +490,7 @@ func DeployTopologyHandler(c *gin.Context) {
 			c.JSON(http.StatusForbidden, models.ErrorResponse{Error: fmt.Sprintf("Lab '%s' is owned by '%s'. Permission denied.", labName, labInfo.Owner)})
 			return
 		}
+		closeResumableTerminals(labName)
 	}
 
 	svc := GetClabService()

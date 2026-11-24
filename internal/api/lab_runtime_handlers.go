@@ -240,6 +240,10 @@ func BulkNodeLifecycleHandler(c *gin.Context) {
 		resolvedNames = append(resolvedNames, resolvedName)
 	}
 
+	if action == clab.NodeLifecycleActionStop {
+		closeResumableTerminals(labName, resolvedNames...)
+	}
+
 	if err := svc.RunNodeLifecycleAction(ctx, clab.NodeLifecycleOptions{
 		LabName:   labName,
 		TopoPath:  originalTopoPath,
@@ -303,12 +307,17 @@ func handleNodeLifecycle(c *gin.Context, action clab.NodeLifecycleAction) {
 		return
 	}
 
+	topologyNode := resolveTopologyNodeName(labName, containerInfo)
+	if action != clab.NodeLifecycleActionStart && action != clab.NodeLifecycleActionUnpause {
+		closeResumableTerminals(labName, topologyNode)
+	}
+
 	if err := svc.RunNodeLifecycleAction(ctx, clab.NodeLifecycleOptions{
 		ContainerName: containerName,
 		LabName:       labName,
 		TopoPath:      originalTopoPath,
 		Username:      username,
-		NodeNames:     []string{resolveTopologyNodeName(labName, containerInfo)},
+		NodeNames:     []string{topologyNode},
 		Action:        action,
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: err.Error()})
@@ -412,6 +421,10 @@ func handleLabNodeLifecycle(c *gin.Context, action clab.NodeLifecycleAction) {
 	if svc == nil {
 		c.JSON(http.StatusInternalServerError, models.ErrorResponse{Error: "Containerlab service not initialized"})
 		return
+	}
+
+	if action == clab.NodeLifecycleActionStop || action == clab.NodeLifecycleActionRestart {
+		closeResumableTerminals(labName)
 	}
 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), 10*time.Minute)
