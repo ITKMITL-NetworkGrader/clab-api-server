@@ -155,6 +155,9 @@ func SetupRoutes(router *gin.Engine) {
 					// Create interactive terminal session for a specific node
 					nodeSpecific.POST("/terminal-sessions", RequestTerminalSessionHandler) // POST /api/v1/labs/{labName}/nodes/{nodeName}/terminal-sessions
 
+					// NTG-516: the node's VNC display as a websocket (raw RFB)
+					nodeSpecific.GET("/vnc", StreamNodeVncHandler) // WS /api/v1/labs/{labName}/nodes/{nodeName}/vnc
+
 					// Logs
 					nodeSpecific.GET("/logs", GetNodeLogsHandler) // GET /api/v1/labs/{labName}/nodes/{nodeName}/logs
 

@@ -3051,6 +3051,47 @@ paths:
       summary: Unpause node
       tags:
       - Labs - Nodes
+  /api/v1/labs/{labName}/nodes/{nodeName}/vnc:
+    get:
+      description: Opens a websocket carrying the raw RFB stream of the node's display
+        on its management address, port 5900.
+      parameters:
+      - description: Name of the lab
+        in: path
+        name: labName
+        required: true
+        type: string
+      - description: Name of the node
+        in: path
+        name: nodeName
+        required: true
+        type: string
+      responses:
+        "101":
+          description: Switching protocols
+          schema:
+            type: string
+        "400":
+          description: Invalid lab or node name
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "404":
+          description: Lab or node not found
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "409":
+          description: Node not running or has no management IPv4
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+        "502":
+          description: The node's display is not reachable
+          schema:
+            $ref: '#/definitions/models.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Stream a node's VNC display
+      tags:
+      - Nodes
   /api/v1/labs/{labName}/nodes/lifecycle:
     post:
       consumes:
