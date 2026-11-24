@@ -633,12 +633,8 @@ func (s *Session) Drop(st *Stream, reason string) {
 
 // Close is the client's deliberate close: only the stream that holds the session may end it.
 func (s *Session) Close(st *Stream, reason string) {
-	s.mu.RLock()
-	stale := s.resumable && s.cur != st
-	s.mu.RUnlock()
-	if !stale {
-		s.Terminate(reason)
-	}
+	// Checked under the same lock that terminates, so a takeover in between keeps its shell.
+	s.terminate(reason, func() bool { return !s.resumable || s.cur == st })
 }
 
 func (s *Session) Read(p []byte) (int, error) {
