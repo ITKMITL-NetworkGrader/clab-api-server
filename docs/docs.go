@@ -3139,6 +3139,68 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/labs/{labName}/nodes/{nodeName}/vnc": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Opens a websocket carrying the raw RFB stream of the node's display on its management address, port 5900.",
+                "tags": [
+                    "Nodes"
+                ],
+                "summary": "Stream a node's VNC display",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Name of the lab",
+                        "name": "labName",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Name of the node",
+                        "name": "nodeName",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "101": {
+                        "description": "Switching protocols",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid lab or node name",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Lab or node not found",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Node not running or has no management IPv4",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    },
+                    "502": {
+                        "description": "The node's display is not reachable",
+                        "schema": {
+                            "$ref": "#/definitions/models.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/labs/{labName}/restart": {
             "post": {
                 "security": [
